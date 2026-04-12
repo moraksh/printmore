@@ -6,6 +6,7 @@ A static browser app for designing printable layouts and generating PDFs from pa
 
 Stored in Supabase:
 
+- User ids and hashed passwords
 - Layout name
 - Page settings
 - Field definitions
@@ -44,7 +45,14 @@ window.PRINT_LAYOUT_CONFIG = {
 
 Never put a `service_role` key in `js/config.js`.
 
-The included SQL allows public anonymous read/write access to layouts. That is convenient for a shared internal tool, but anyone with the deployed app URL can change layouts. Add Supabase Auth and owner-based RLS before using it for private or multi-user production work.
+The SQL creates the super user:
+
+- User ID: `moraksh`
+- Password: `More400`
+
+Only this super user sees the `Add User` button. New user ids are unique, and each saved layout is tagged with the logged-in user's id so the UI shows only that user's layouts.
+
+The included app-level login is suitable for a small controlled tool. For stricter public production security, move to Supabase Auth with owner-based RLS policies.
 
 ## Vercel Deploy
 

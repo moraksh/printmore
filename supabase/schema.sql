@@ -1,37 +1,133 @@
+create extension if not exists pgcrypto;
+
+create table if not exists public.printmore_users (
+  id uuid primary key default gen_random_uuid(),
+  username text not null unique,
+  password_hash text not null,
+  is_super_user boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+alter table public.printmore_users enable row level security;
+
+insert into public.printmore_users (username, password_hash, is_super_user)
+values ('moraksh', crypt('More400', gen_salt('bf')), true)
+on conflict (username) do update
+set password_hash = excluded.password_hash,
+    is_super_user = true;
+
 create table if not exists public.layouts (
   id text primary key,
+  user_id uuid references public.printmore_users(id) on delete cascade,
   name text not null,
   layout jsonb not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
+alter table public.layouts
+add column if not exists user_id uuid references public.printmore_users(id) on delete cascade;
+
+update public.layouts
+set user_id = (select id from public.printmore_users where username = 'moraksh')
+where user_id is null;
+
+alter table public.layouts
+alter column user_id set not null;
+
 alter table public.layouts enable row level security;
 
-create policy "Allow public layout reads"
+drop policy if exists "Allow public layout reads" on public.layouts;
+drop policy if exists "Allow public layout inserts" on public.layouts;
+drop policy if exists "Allow public layout updates" on public.layouts;
+drop policy if exists "Allow public layout deletes" on public.layouts;
+drop policy if exists "Allow app layout reads" on public.layouts;
+drop policy if exists "Allow app layout inserts" on public.layouts;
+drop policy if exists "Allow app layout updates" on public.layouts;
+drop policy if exists "Allow app layout deletes" on public.layouts;
+
+create policy "Allow app layout reads"
 on public.layouts
 for select
 to anon
 using (true);
 
-create policy "Allow public layout inserts"
+create policy "Allow app layout inserts"
 on public.layouts
 for insert
 to anon
 with check (true);
 
-create policy "Allow public layout updates"
+create policy "Allow app layout updates"
 on public.layouts
 for update
 to anon
 using (true)
 with check (true);
 
-create policy "Allow public layout deletes"
+create policy "Allow app layout deletes"
 on public.layouts
 for delete
 to anon
 using (true);
 
-create index if not exists layouts_updated_at_idx
-on public.layouts (updated_at desc);
+create index if not exists layouts_user_updated_at_idx
+on public.layouts (user_id, updated_at desc);
+
+create or replace function public.authenticate_printmore_user(
+  p_username text,
+  p_password text
+)
+returns table(id uuid, username text, is_super_user boolean)
+language sql
+security definer
+set search_path = public
+as $$
+  select u.id, u.username, u.is_super_user
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_username))
+    and u.password_hash = crypt(p_password, u.password_hash)
+  limit 1;
+$$;
+
+create or replace function public.create_printmore_user(
+  p_admin_username text,
+  p_admin_password text,
+  p_username text,
+  p_password text
+)
+returns table(id uuid, username text, is_super_user boolean)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_admin public.printmore_users;
+  v_user public.printmore_users;
+begin
+  select *
+  into v_admin
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_admin_username))
+    and u.password_hash = crypt(p_admin_password, u.password_hash)
+    and u.is_super_user = true
+  limit 1;
+
+  if v_admin.id is null then
+    raise exception 'Invalid super user password.';
+  end if;
+
+  if trim(coalesce(p_username, '')) = '' or coalesce(p_password, '') = '' then
+    raise exception 'User id and password are required.';
+  end if;
+
+  insert into public.printmore_users (username, password_hash, is_super_user)
+  values (trim(p_username), crypt(p_password, gen_salt('bf')), false)
+  returning * into v_user;
+
+  return query select v_user.id, v_user.username, v_user.is_super_user;
+end;
+$$;
+
+grant execute on function public.authenticate_printmore_user(text, text) to anon;
+grant execute on function public.create_printmore_user(text, text, text, text) to anon;

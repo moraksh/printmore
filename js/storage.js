@@ -23,10 +23,12 @@ const LayoutStore = (() => {
   let cache = [];
   let ready = false;
   let lastError = null;
+  let currentUser = null;
 
   function readLocal() {
     try {
-      const raw = localStorage.getItem(LOCAL_KEY);
+      const key = currentUser ? `${LOCAL_KEY}:${currentUser.username}` : LOCAL_KEY;
+      const raw = localStorage.getItem(key);
       return raw ? JSON.parse(raw) : [];
     } catch {
       return [];
@@ -34,7 +36,8 @@ const LayoutStore = (() => {
   }
 
   function writeLocal(layouts) {
-    localStorage.setItem(LOCAL_KEY, JSON.stringify(layouts));
+    const key = currentUser ? `${LOCAL_KEY}:${currentUser.username}` : LOCAL_KEY;
+    localStorage.setItem(key, JSON.stringify(layouts));
   }
 
   function syncFromLocal() {
@@ -52,9 +55,10 @@ const LayoutStore = (() => {
     return layout && typeof layout === 'object' ? layout : null;
   }
 
-  async function init() {
+  async function init(user) {
+    currentUser = user || currentUser;
     cache = readLocal();
-    if (!client) {
+    if (!client || !currentUser) {
       ready = true;
       return cache;
     }
@@ -63,6 +67,7 @@ const LayoutStore = (() => {
       const { data, error } = await client
         .from(tableName)
         .select('layout')
+        .eq('user_id', currentUser.id)
         .order('updated_at', { ascending: false });
 
       if (error) throw error;
@@ -101,15 +106,20 @@ const LayoutStore = (() => {
 
   async function save(layout) {
     const cleanLayout = JSON.parse(JSON.stringify(layout));
+    if (currentUser) {
+      cleanLayout.userId = currentUser.id;
+      cleanLayout.username = currentUser.username;
+    }
     upsertLocal(cleanLayout);
 
-    if (!client) return { ok: true, mode: 'local' };
+    if (!client || !currentUser) return { ok: true, mode: 'local' };
 
     try {
       const { error } = await client
         .from(tableName)
         .upsert({
           id: cleanLayout.id,
+          user_id: currentUser.id,
           name: cleanLayout.name || 'Untitled Layout',
           layout: cleanLayout,
           updated_at: new Date().toISOString(),
@@ -130,10 +140,14 @@ const LayoutStore = (() => {
     writeLocal(cache);
     notifyChange('delete', id);
 
-    if (!client) return { ok: true, mode: 'local' };
+    if (!client || !currentUser) return { ok: true, mode: 'local' };
 
     try {
-      const { error } = await client.from(tableName).delete().eq('id', id);
+      const { error } = await client
+        .from(tableName)
+        .delete()
+        .eq('id', id)
+        .eq('user_id', currentUser.id);
       if (error) throw error;
       lastError = null;
       return { ok: true, mode: 'supabase' };

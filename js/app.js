@@ -23,6 +23,43 @@ let designerInstance = null;
 // Parsed data storage for Run view
 let runParsedData = null;
 
+function getCurrentUser() {
+  return window.AuthStore ? window.AuthStore.currentUser() : null;
+}
+
+function updateUserChrome() {
+  const user = getCurrentUser();
+  const label = document.getElementById('current-user-label');
+  const addUserBtn = document.getElementById('btn-add-user');
+
+  if (label) label.textContent = user ? `User: ${user.username}` : '';
+  if (addUserBtn) addUserBtn.classList.toggle('hidden', !user?.isSuperUser);
+}
+
+function showLoginView(message) {
+  showView('login');
+  const error = document.getElementById('login-error');
+  if (error) {
+    error.textContent = message || '';
+    error.classList.toggle('hidden', !message);
+  }
+}
+
+async function loadCurrentUserLayouts() {
+  const user = getCurrentUser();
+  if (!user) {
+    showLoginView();
+    return false;
+  }
+
+  if (window.LayoutStore) {
+    await window.LayoutStore.init(user);
+    updateStorageStatus();
+  }
+  updateUserChrome();
+  return true;
+}
+
 function updateStorageStatus() {
   const el = document.getElementById('storage-status');
   if (!el || !window.LayoutStore) return;
@@ -404,6 +441,19 @@ function renderParsedPreview(data, fields) {
 
 // ===== Event wiring =====
 function initHomeEvents() {
+  document.getElementById('btn-logout').addEventListener('click', () => {
+    if (designerInstance) {
+      designerInstance.destroy();
+      designerInstance = null;
+    }
+    if (window.AuthStore) window.AuthStore.logout();
+    showLoginView();
+  });
+
+  document.getElementById('btn-add-user').addEventListener('click', () => {
+    openAddUserModal();
+  });
+
   document.getElementById('btn-new-layout').addEventListener('click', () => {
     showSetupView(null);
   });
@@ -433,6 +483,94 @@ function initHomeEvents() {
         deleteLayout(id);
         renderHomeView();
       }
+    }
+  });
+}
+
+function initLoginEvents() {
+  document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = document.getElementById('login-user-id').value.trim();
+    const password = document.getElementById('login-password').value;
+    const error = document.getElementById('login-error');
+    const btn = document.getElementById('btn-login');
+
+    error.classList.add('hidden');
+    btn.disabled = true;
+    btn.textContent = 'Signing in...';
+
+    try {
+      await window.AuthStore.login(username, password);
+      document.getElementById('login-password').value = '';
+      await loadCurrentUserLayouts();
+      const livePreviewId = new URLSearchParams(window.location.search).get('livepreview');
+      if (livePreviewId) {
+        initLivePreviewMode(livePreviewId);
+        return;
+      }
+      renderHomeView();
+    } catch (err) {
+      error.textContent = err.message || 'Sign in failed.';
+      error.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Sign In';
+    }
+  });
+}
+
+function openAddUserModal() {
+  document.getElementById('new-user-id').value = '';
+  document.getElementById('new-user-password').value = '';
+  document.getElementById('admin-password-confirm').value = '';
+  document.getElementById('add-user-error').classList.add('hidden');
+  document.getElementById('modal-add-user').classList.remove('hidden');
+}
+
+function closeAddUserModal() {
+  document.getElementById('modal-add-user').classList.add('hidden');
+}
+
+function initAddUserEvents() {
+  document.getElementById('btn-add-user-close').addEventListener('click', closeAddUserModal);
+  document.getElementById('btn-add-user-cancel').addEventListener('click', closeAddUserModal);
+  document.getElementById('modal-add-user').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('modal-add-user')) closeAddUserModal();
+  });
+
+  document.getElementById('btn-add-user-save').addEventListener('click', async () => {
+    const current = getCurrentUser();
+    const username = document.getElementById('new-user-id').value.trim();
+    const password = document.getElementById('new-user-password').value;
+    const adminPassword = document.getElementById('admin-password-confirm').value;
+    const error = document.getElementById('add-user-error');
+    const btn = document.getElementById('btn-add-user-save');
+
+    error.classList.add('hidden');
+
+    if (!current?.isSuperUser) {
+      error.textContent = 'Only the super user can add users.';
+      error.classList.remove('hidden');
+      return;
+    }
+    if (!username || !password || !adminPassword) {
+      error.textContent = 'Enter user id, password, and your super user password.';
+      error.classList.remove('hidden');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+    try {
+      await window.AuthStore.addUser(current.username, adminPassword, username, password);
+      closeAddUserModal();
+      showToast(`User "${username}" created.`);
+    } catch (err) {
+      error.textContent = err.message || 'Could not create user.';
+      error.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Create User';
     }
   });
 }
@@ -1004,25 +1142,26 @@ function initLivePreviewMode(layoutId) {
 
 // ===== Init =====
 document.addEventListener('DOMContentLoaded', async () => {
-  if (window.LayoutStore) {
-    updateStorageStatus();
-    await window.LayoutStore.init();
-    updateStorageStatus();
-  }
-
-  // Check if this tab is opened as a live preview
-  const urlParams = new URLSearchParams(window.location.search);
-  const livePreviewId = urlParams.get('livepreview');
-  if (livePreviewId) {
-    // Wait for scripts to load then init live preview
-    initLivePreviewMode(livePreviewId);
-    return;
-  }
-
+  initLoginEvents();
   initHomeEvents();
   initSetupEvents();
   initDesignerAppEvents();
   initRunEvents();
   initRunPreviewModalEvents();
+  initAddUserEvents();
+
+  // Check if this tab is opened as a live preview
+  const urlParams = new URLSearchParams(window.location.search);
+  const livePreviewId = urlParams.get('livepreview');
+  if (livePreviewId) {
+    const ready = await loadCurrentUserLayouts();
+    if (!ready) return;
+    // Wait for scripts to load then init live preview
+    initLivePreviewMode(livePreviewId);
+    return;
+  }
+
+  const ready = await loadCurrentUserLayouts();
+  if (!ready) return;
   renderHomeView();
 });
