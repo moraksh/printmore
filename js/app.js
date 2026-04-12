@@ -973,9 +973,8 @@ function initLivePreviewMode(layoutId) {
     btn.innerHTML = '&#128196; PDF';
   });
 
-  // Listen for layout changes saved by the designer in another tab
-  window.addEventListener('storage', (e) => {
-    if (e.key !== STORAGE_KEY) return;
+  function refreshLivePreviewFromSavedLayout() {
+    if (window.LayoutStore) window.LayoutStore.syncFromLocal();
     const updated = getLayoutById(layoutId);
     if (!updated) return;
     lpLayout = updated;
@@ -987,7 +986,20 @@ function initLivePreviewMode(layoutId) {
     if (lpLastRendered && document.getElementById('livepreview-auto-refresh').checked) {
       doRender();
     }
+  }
+
+  // Listen for layout changes saved by the designer in another tab.
+  window.addEventListener('storage', (e) => {
+    if (e.key !== STORAGE_KEY) return;
+    refreshLivePreviewFromSavedLayout();
   });
+
+  if (window.LayoutStore) {
+    window.LayoutStore.onExternalChange((message) => {
+      if (!message || message.id !== layoutId) return;
+      refreshLivePreviewFromSavedLayout();
+    });
+  }
 }
 
 // ===== Init =====

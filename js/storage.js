@@ -16,6 +16,9 @@ const LayoutStore = (() => {
   const client = hasSupabaseConfig && hasSupabaseClient
     ? window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY)
     : null;
+  const channel = typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel('printmore-layouts')
+    : null;
 
   let cache = [];
   let ready = false;
@@ -32,6 +35,15 @@ const LayoutStore = (() => {
 
   function writeLocal(layouts) {
     localStorage.setItem(LOCAL_KEY, JSON.stringify(layouts));
+  }
+
+  function syncFromLocal() {
+    cache = readLocal();
+    return cache;
+  }
+
+  function notifyChange(type, id) {
+    if (channel) channel.postMessage({ type, id });
   }
 
   function normalizeLayout(rowOrLayout) {
@@ -84,6 +96,7 @@ const LayoutStore = (() => {
       cache.push(layout);
     }
     writeLocal(cache);
+    notifyChange('save', layout.id);
   }
 
   async function save(layout) {
@@ -115,6 +128,7 @@ const LayoutStore = (() => {
   async function remove(id) {
     cache = cache.filter(layout => layout.id !== id);
     writeLocal(cache);
+    notifyChange('delete', id);
 
     if (!client) return { ok: true, mode: 'local' };
 
@@ -140,9 +154,14 @@ const LayoutStore = (() => {
     init,
     getAll,
     getById,
+    syncFromLocal,
     save,
     remove,
     status,
+    onExternalChange: (handler) => {
+      if (!channel) return;
+      channel.addEventListener('message', event => handler(event.data));
+    },
     isSupabaseEnabled: () => Boolean(client),
   };
 })();

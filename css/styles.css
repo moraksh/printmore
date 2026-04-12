@@ -154,26 +154,6 @@ input, select, textarea, button {
   gap: 8px;
 }
 
-.storage-status {
-  border: 1px solid rgba(255,255,255,0.14);
-  border-radius: 8px;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 700;
-  padding: 7px 10px;
-  white-space: nowrap;
-}
-
-.storage-status[data-status="supabase"] {
-  border-color: rgba(67,233,123,0.35);
-  color: var(--success);
-}
-
-.storage-status[data-status="offline"] {
-  border-color: rgba(255,193,7,0.4);
-  color: #ffc107;
-}
-
 /* ===== HOME VIEW ===== */
 .home-main {
   flex: 1;
