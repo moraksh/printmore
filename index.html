@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PrintMore</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+
+<!-- ===================== HOME VIEW ===================== -->
+<div id="view-home" class="view active">
+  <header class="app-header">
+    <div class="app-logo">
+      <span class="logo-icon">&#9881;</span>
+      <span class="logo-text">PrintMore</span>
+    </div>
+    <div class="home-header-actions">
+      <span id="storage-status" class="storage-status" data-status="loading">Loading layouts...</span>
+      <button class="btn btn-secondary" id="btn-import-layout" title="Import a layout from a JSON file">&#8593; Import Layout</button>
+      <button class="btn btn-primary" id="btn-new-layout">+ New Layout</button>
+    </div>
+    <input type="file" id="import-layout-file" accept=".json" style="display:none" />
+  </header>
+  <main class="home-main">
+    <div class="section-title">My Layouts</div>
+    <div id="layouts-grid" class="layouts-grid">
+      <!-- Cards injected by JS -->
+    </div>
+    <div id="no-layouts-msg" class="no-layouts-msg hidden">
+      <div class="no-layouts-icon">&#128196;</div>
+      <p>No layouts yet. Click <strong>+ New Layout</strong> to get started.</p>
+    </div>
+  </main>
+</div>
+
+<!-- ===================== SETUP VIEW ===================== -->
+<div id="view-setup" class="view hidden">
+  <header class="app-header">
+    <button class="btn btn-ghost" id="btn-setup-back">&#8592; Back</button>
+    <div class="app-logo"><span class="logo-text">New Layout Setup</span></div>
+    <div></div>
+  </header>
+  <main class="setup-main">
+    <div class="setup-steps">
+      <div class="step-indicator">
+        <div class="step active" id="step-ind-1"><span>1</span> Page Setup</div>
+        <div class="step-divider"></div>
+        <div class="step" id="step-ind-2"><span>2</span> Field Names</div>
+      </div>
+
+      <!-- Step 1 -->
+      <div id="setup-step-1" class="setup-card">
+        <h2>Page Setup</h2>
+        <div class="form-group">
+          <label>Layout Name</label>
+          <input type="text" id="layout-name" placeholder="e.g. Invoice, Report…" />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Page Size</label>
+            <select id="page-size">
+              <option value="A4">A4 (210×297 mm)</option>
+              <option value="A3">A3 (297×420 mm)</option>
+              <option value="A5">A5 (148×210 mm)</option>
+              <option value="Letter">Letter (215.9×279.4 mm)</option>
+              <option value="Legal">Legal (215.9×355.6 mm)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Orientation</label>
+            <select id="page-orientation">
+              <option value="portrait">Portrait</option>
+              <option value="landscape">Landscape</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Margins (mm)</label>
+          <div class="margins-simple">
+            <div class="form-group"><label>Top</label><input type="number" id="margin-top" value="15" min="0" /></div>
+            <div class="form-group"><label>Right</label><input type="number" id="margin-right" value="15" min="0" /></div>
+            <div class="form-group"><label>Bottom</label><input type="number" id="margin-bottom" value="15" min="0" /></div>
+            <div class="form-group"><label>Left</label><input type="number" id="margin-left" value="15" min="0" /></div>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="btn-step1-next">Next &rarr;</button>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div id="setup-step-2" class="setup-card hidden">
+        <h2>Field Names</h2>
+        <p class="hint">Copy columns from Excel and paste below. Each non-empty cell becomes a field name.</p>
+        <div class="form-group">
+          <label>Paste Field Names</label>
+          <textarea id="field-names-input" rows="5" placeholder="CustomerName&#9;InvoiceNo&#9;Date&#10;ItemDesc&#9;Qty&#9;Price"></textarea>
+        </div>
+        <div id="parsed-fields-preview" class="parsed-fields-preview hidden">
+          <label>Parsed Fields — set type for each:</label>
+          <div class="field-type-hint">
+            <strong>Heading</strong> = single value (e.g. customer name, invoice no)&nbsp;&nbsp;
+            <strong>Detail</strong> = repeating rows (e.g. item description, quantity)
+          </div>
+          <div id="field-type-list" class="field-type-list"></div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-ghost" id="btn-step2-back">&larr; Back</button>
+          <button class="btn btn-primary" id="btn-create-layout">Create Layout &amp; Open Designer</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ===================== DESIGNER VIEW ===================== -->
+<div id="view-designer" class="view hidden">
+  <!-- Top Toolbar -->
+  <div class="designer-toolbar">
+    <div class="toolbar-left">
+      <button class="btn btn-ghost toolbar-btn" id="btn-designer-home" title="Back to Home">&#8592; Home</button>
+      <span class="toolbar-divider"></span>
+      <button class="btn btn-primary toolbar-btn" id="btn-save" title="Save (Ctrl+S)">&#128190; Save</button>
+      <button class="btn btn-secondary toolbar-btn" id="btn-preview-pdf" title="Preview PDF">&#128196; PDF</button>
+      <button class="btn btn-run toolbar-btn" id="btn-run-preview" title="Preview with data">&#9654; Run</button>
+      <button class="btn btn-ghost toolbar-btn" id="btn-export-layout" title="Export layout as JSON file">&#8595; Export</button>
+      <button class="btn btn-ghost toolbar-btn" id="btn-live-preview" title="Open live preview in new tab">&#128065; Live</button>
+    </div>
+    <div class="toolbar-center">
+      <span id="toolbar-layout-name" class="toolbar-layout-name">Layout Name</span>
+    </div>
+    <div class="toolbar-right">
+      <button class="btn btn-ghost toolbar-btn" id="btn-undo" title="Undo (Ctrl+Z)">&#8634; Undo</button>
+      <button class="btn btn-ghost toolbar-btn" id="btn-redo" title="Redo (Ctrl+Y)">&#8635; Redo</button>
+      <span class="toolbar-divider"></span>
+      <button class="btn btn-ghost toolbar-btn" id="btn-zoom-out" title="Zoom Out">&#8722;</button>
+      <span id="zoom-label" class="zoom-label">100%</span>
+      <button class="btn btn-ghost toolbar-btn" id="btn-zoom-in" title="Zoom In">&#43;</button>
+      <span class="toolbar-divider"></span>
+      <button class="btn btn-ghost toolbar-btn" id="btn-grid-toggle" title="Toggle Grid">&#9783; Grid</button>
+      <button class="btn btn-ghost toolbar-btn" id="btn-page-settings" title="Page Settings">&#9881; Page</button>
+    </div>
+  </div>
+
+  <div class="designer-body">
+    <!-- Left Panel -->
+    <div class="designer-left-panel">
+      <div class="panel-section">
+        <div class="panel-section-title">Tools</div>
+        <div class="tools-grid">
+          <button class="tool-btn active" data-tool="select" title="Select">
+            <span class="tool-icon">&#9654;</span>
+            <span class="tool-label">Select</span>
+          </button>
+          <button class="tool-btn" data-tool="text" title="Static Text">
+            <span class="tool-icon">T</span>
+            <span class="tool-label">Text</span>
+          </button>
+          <button class="tool-btn" data-tool="field" title="Data Field">
+            <span class="tool-icon">{F}</span>
+            <span class="tool-label">Field</span>
+          </button>
+          <button class="tool-btn" data-tool="image" title="Logo/Image">
+            <span class="tool-icon">&#128247;</span>
+            <span class="tool-label">Image</span>
+          </button>
+          <button class="tool-btn" data-tool="rect" title="Rectangle">
+            <span class="tool-icon">&#9644;</span>
+            <span class="tool-label">Rect</span>
+          </button>
+          <button class="tool-btn" data-tool="line" title="Line">
+            <span class="tool-icon">&#9135;</span>
+            <span class="tool-label">Line</span>
+          </button>
+          <button class="tool-btn" data-tool="table" title="Detail Table">
+            <span class="tool-icon">&#9776;</span>
+            <span class="tool-label">Table</span>
+          </button>
+          <button class="tool-btn" data-tool="datetime" title="Date / Time Stamp">
+            <span class="tool-icon">&#128337;</span>
+            <span class="tool-label">DateTime</span>
+          </button>
+          <button class="tool-btn" data-tool="pagenum" title="Page Number">
+            <span class="tool-icon">&#35;</span>
+            <span class="tool-label">Page No</span>
+          </button>
+          <button class="tool-btn" data-tool="barcode" title="Barcode">
+            <span class="tool-icon">&#10075;&#10076;</span>
+            <span class="tool-label">Barcode</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="panel-section fields-panel-section">
+        <div class="panel-section-title">Fields <span class="hint-text">(drag to canvas)</span></div>
+        <div id="fields-list" class="fields-list">
+          <!-- Field items injected by JS -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Canvas Area -->
+    <div class="designer-canvas-area" id="canvas-area">
+      <div class="canvas-rulers-container">
+        <div class="ruler-corner"></div>
+        <div id="ruler-h" class="ruler ruler-h"></div>
+        <div id="ruler-v" class="ruler ruler-v"></div>
+        <div class="canvas-scroll-area" id="canvas-scroll-area">
+          <div class="canvas-outer" id="canvas-outer">
+            <canvas id="grid-canvas" class="grid-canvas"></canvas>
+            <div id="page-canvas" class="page-canvas">
+              <!-- Elements rendered here -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel -->
+    <div class="designer-right-panel" id="right-panel">
+      <div class="panel-section">
+        <div class="panel-section-title">Properties</div>
+        <div id="properties-panel" class="properties-panel">
+          <div id="no-selection-msg" class="no-selection-msg">
+            <div class="page-settings-inline">
+              <div class="prop-group-title">Page Settings</div>
+              <div class="prop-field">
+                <label>Page Size</label>
+                <select id="inline-page-size">
+                  <option value="A4">A4 (210×297 mm)</option>
+                  <option value="A3">A3 (297×420 mm)</option>
+                  <option value="A5">A5 (148×210 mm)</option>
+                  <option value="Letter">Letter (215.9×279.4 mm)</option>
+                  <option value="Legal">Legal (215.9×355.6 mm)</option>
+                </select>
+              </div>
+              <div class="prop-field">
+                <label>Orientation</label>
+                <select id="inline-orientation">
+                  <option value="portrait">Portrait</option>
+                  <option value="landscape">Landscape</option>
+                </select>
+              </div>
+              <div class="prop-group-title" style="margin-top:12px;">Margins (mm)</div>
+              <div class="margins-simple">
+                <div class="form-group"><label>Top</label><input type="number" id="inline-margin-top" value="15" min="0" /></div>
+                <div class="form-group"><label>Right</label><input type="number" id="inline-margin-right" value="15" min="0" /></div>
+                <div class="form-group"><label>Bottom</label><input type="number" id="inline-margin-bottom" value="15" min="0" /></div>
+                <div class="form-group"><label>Left</label><input type="number" id="inline-margin-left" value="15" min="0" /></div>
+              </div>
+
+              <div class="prop-group-title" style="margin-top:14px;">Header Zone</div>
+              <div class="prop-field">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="inline-header-enabled" />
+                  Enable header zone
+                </label>
+              </div>
+              <div id="inline-header-options" class="zone-options hidden">
+                <div class="prop-row">
+                  <div class="prop-field">
+                    <label>Height (mm)</label>
+                    <input type="number" id="inline-header-height" value="20" min="5" max="150" step="1" />
+                  </div>
+                  <div class="prop-field">
+                    <label>Show on</label>
+                    <select id="inline-header-pages">
+                      <option value="all">All Pages</option>
+                      <option value="first">First Page Only</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div class="prop-group-title" style="margin-top:10px;">Footer Zone</div>
+              <div class="prop-field">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="inline-footer-enabled" />
+                  Enable footer zone
+                </label>
+              </div>
+              <div id="inline-footer-options" class="zone-options hidden">
+                <div class="prop-row">
+                  <div class="prop-field">
+                    <label>Height (mm)</label>
+                    <input type="number" id="inline-footer-height" value="15" min="5" max="150" step="1" />
+                  </div>
+                  <div class="prop-field">
+                    <label>Show on</label>
+                    <select id="inline-footer-pages">
+                      <option value="all">All Pages</option>
+                      <option value="last">Last Page Only</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div id="element-properties" class="element-properties hidden">
+            <!-- Position & Size -->
+            <div class="prop-group">
+              <div class="prop-group-title">Position &amp; Size</div>
+              <div class="prop-row">
+                <div class="prop-field">
+                  <label>X (mm)</label>
+                  <input type="number" id="prop-x" step="0.5" />
+                </div>
+                <div class="prop-field">
+                  <label>Y (mm)</label>
+                  <input type="number" id="prop-y" step="0.5" />
+                </div>
+              </div>
+              <div class="prop-row">
+                <div class="prop-field">
+                  <label>W (mm)</label>
+                  <input type="number" id="prop-w" step="0.5" min="1" />
+                </div>
+                <div class="prop-field">
+                  <label>H (mm)</label>
+                  <input type="number" id="prop-h" step="0.5" min="1" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Content (text/field) -->
+            <div class="prop-group" id="prop-group-content">
+              <div class="prop-group-title">Content</div>
+              <div class="prop-field" id="prop-content-text-wrap">
+                <label>Text</label>
+                <textarea id="prop-content" rows="2"></textarea>
+              </div>
+              <div class="prop-field" id="prop-field-name-wrap">
+                <label>Field</label>
+                <select id="prop-field-name">
+                  <option value="">-- select field --</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Typography -->
+            <div class="prop-group" id="prop-group-typography">
+              <div class="prop-group-title">Typography</div>
+              <div class="prop-field">
+                <label>Quick Style</label>
+                <div class="heading-presets">
+                  <button class="preset-btn" data-preset="title">Title</button>
+                  <button class="preset-btn" data-preset="h1">H1</button>
+                  <button class="preset-btn" data-preset="h2">H2</button>
+                  <button class="preset-btn" data-preset="h3">H3</button>
+                  <button class="preset-btn" data-preset="body">Body</button>
+                  <button class="preset-btn" data-preset="small">Small</button>
+                  <button class="preset-btn" data-preset="label">Label</button>
+                </div>
+              </div>
+              <div class="prop-field">
+                <label>Font Family</label>
+                <select id="prop-font-family">
+                  <option value="Arial">Arial</option>
+                  <option value="Helvetica">Helvetica</option>
+                  <option value="Times New Roman">Times New Roman</option>
+                  <option value="Courier New">Courier New</option>
+                  <option value="Georgia">Georgia</option>
+                  <option value="Verdana">Verdana</option>
+                  <option value="Trebuchet MS">Trebuchet MS</option>
+                </select>
+              </div>
+              <div class="prop-row">
+                <div class="prop-field">
+                  <label>Size (pt)</label>
+                  <input type="number" id="prop-font-size" min="6" max="144" step="1" value="12" />
+                </div>
+                <div class="prop-field">
+                  <label>Color</label>
+                  <input type="color" id="prop-color" value="#000000" />
+                </div>
+              </div>
+              <div class="prop-row style-buttons">
+                <button class="style-btn" id="prop-bold" title="Bold"><strong>B</strong></button>
+                <button class="style-btn" id="prop-italic" title="Italic"><em>I</em></button>
+                <button class="style-btn" id="prop-underline" title="Underline"><u>U</u></button>
+              </div>
+              <div class="prop-field">
+                <label>Text Align</label>
+                <div class="align-buttons">
+                  <button class="align-btn" data-align="left" title="Left">&#8676;</button>
+                  <button class="align-btn" data-align="center" title="Center">&#8677;</button>
+                  <button class="align-btn" data-align="right" title="Right">&#8677;</button>
+                  <button class="align-btn" data-align="justify" title="Justify">&#8801;</button>
+                </div>
+              </div>
+              <div class="prop-field">
+                <label>Position on Page</label>
+                <div class="align-buttons page-pos-buttons">
+                  <button class="align-btn page-pos-btn" data-pos="left" title="Align to left margin">&#8676;L</button>
+                  <button class="align-btn page-pos-btn" data-pos="center-h" title="Center horizontally">&#8596;</button>
+                  <button class="align-btn page-pos-btn" data-pos="right" title="Align to right margin">R&#8677;</button>
+                  <button class="align-btn page-pos-btn" data-pos="center-v" title="Center vertically">&#8597;</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Background & Border -->
+            <div class="prop-group" id="prop-group-box">
+              <div class="prop-group-title">Box Style</div>
+              <div class="prop-row">
+                <div class="prop-field">
+                  <label>Background</label>
+                  <div class="color-with-none">
+                    <input type="color" id="prop-bg-color" value="#ffffff" />
+                    <label class="checkbox-label"><input type="checkbox" id="prop-bg-none" /> None</label>
+                  </div>
+                </div>
+                <div class="prop-field">
+                  <label>Opacity</label>
+                  <input type="range" id="prop-opacity" min="0" max="1" step="0.05" value="1" />
+                  <span id="prop-opacity-val">100%</span>
+                </div>
+              </div>
+              <div class="prop-row">
+                <div class="prop-field">
+                  <label>Border W</label>
+                  <input type="number" id="prop-border-width" min="0" max="20" step="1" value="0" />
+                </div>
+                <div class="prop-field">
+                  <label>Border Color</label>
+                  <input type="color" id="prop-border-color" value="#000000" />
+                </div>
+              </div>
+              <div class="prop-field">
+                <label>Border Style</label>
+                <select id="prop-border-style">
+                  <option value="solid">Solid</option>
+                  <option value="dashed">Dashed</option>
+                  <option value="dotted">Dotted</option>
+                  <option value="double">Double</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Line properties -->
+            <div class="prop-group hidden" id="prop-group-line">
+              <div class="prop-group-title">Line</div>
+              <div class="prop-row">
+                <div class="prop-field">
+                  <label>Direction</label>
+                  <select id="prop-line-direction">
+                    <option value="horizontal">Horizontal</option>
+                    <option value="vertical">Vertical</option>
+                  </select>
+                </div>
+                <div class="prop-field">
+                  <label>Thickness</label>
+                  <input type="number" id="prop-line-thickness" min="1" max="20" value="1" />
+                </div>
+              </div>
+              <div class="prop-field">
+                <label>Color</label>
+                <input type="color" id="prop-line-color" value="#000000" />
+              </div>
+            </div>
+
+            <!-- Table properties -->
+            <div class="prop-group hidden" id="prop-group-table">
+              <div class="prop-group-title">Table</div>
+              <div class="prop-row">
+                <div class="prop-field">
+                  <label>Rows</label>
+                  <input type="number" id="prop-table-rows" min="1" max="50" value="3" />
+                </div>
+                <div class="prop-field">
+                  <label>Cols</label>
+                  <input type="number" id="prop-table-cols" min="1" max="20" value="3" />
+                </div>
+              </div>
+              <div class="prop-field">
+                <label>Table Theme</label>
+                <div class="table-themes" id="table-themes">
+                  <button class="table-theme-btn active" data-theme="plain" title="Plain">Plain</button>
+                  <button class="table-theme-btn" data-theme="dark-header" title="Dark Header">Dark</button>
+                  <button class="table-theme-btn" data-theme="blue" title="Blue">Blue</button>
+                  <button class="table-theme-btn" data-theme="green" title="Green">Green</button>
+                  <button class="table-theme-btn" data-theme="striped" title="Striped">Stripe</button>
+                </div>
+              </div>
+              <div class="prop-field">
+                <label>Cell Borders</label>
+                <select id="prop-table-border-mode">
+                  <option value="all">All Borders</option>
+                  <option value="outer">Outer Only</option>
+                  <option value="header-outer">Header + Outer</option>
+                  <option value="none">No Borders</option>
+                </select>
+              </div>
+              <div class="prop-row">
+                <div class="prop-field">
+                  <label>Header BG</label>
+                  <input type="color" id="prop-table-header-bg" value="#4a4a8a" />
+                </div>
+                <div class="prop-field">
+                  <label>Header Text</label>
+                  <input type="color" id="prop-table-header-color" value="#ffffff" />
+                </div>
+              </div>
+              <div class="prop-row">
+                <div class="prop-field">
+                  <label>Row BG</label>
+                  <input type="color" id="prop-table-row-bg" value="#ffffff" />
+                </div>
+                <div class="prop-field">
+                  <label>Alt Row BG</label>
+                  <input type="color" id="prop-table-alt-bg" value="#f0f0f8" />
+                </div>
+              </div>
+              <div class="prop-field">
+                <label>Mode</label>
+                <select id="prop-table-detail-mode">
+                  <option value="static">Heading (fixed rows)</option>
+                  <option value="detail">Detail (repeating rows)</option>
+                </select>
+              </div>
+              <div id="table-cell-editor" class="table-cell-editor">
+                <div class="prop-group-title" style="margin-top:8px;">Cell Mapping <small style="opacity:0.6">(drop fields or double-click)</small></div>
+                <div id="table-cell-visual" class="table-cell-visual"></div>
+              </div>
+            </div>
+
+            <!-- Column properties (shown when header cell clicked) -->
+            <div class="prop-group hidden" id="prop-group-column">
+              <div class="prop-group-title">Column Properties</div>
+              <div class="prop-field">
+                <label id="col-prop-label">Column 1</label>
+              </div>
+              <div class="prop-field">
+                <label>Alignment</label>
+                <div class="align-btns" id="col-align-btns">
+                  <button class="align-btn active" data-col-align="left" title="Left">&#8676;</button>
+                  <button class="align-btn" data-col-align="center" title="Center">&#8596;</button>
+                  <button class="align-btn" data-col-align="right" title="Right">&#8677;</button>
+                </div>
+              </div>
+              <div class="prop-row">
+                <div class="prop-field">
+                  <label>Pad Left (px)</label>
+                  <input type="number" id="col-prop-pad-left" min="0" max="50" value="5" />
+                </div>
+                <div class="prop-field">
+                  <label>Pad Right (px)</label>
+                  <input type="number" id="col-prop-pad-right" min="0" max="50" value="5" />
+                </div>
+              </div>
+              <div class="prop-field" style="margin-top:6px;">
+                <label class="prop-checkbox-label">
+                  <input type="checkbox" id="col-prop-barcode" />
+                  Show values as barcode
+                </label>
+              </div>
+              <div id="col-barcode-opts" class="hidden" style="display:flex;flex-direction:column;gap:6px;margin-top:4px;padding-left:4px;border-left:2px solid var(--border);">
+                <div class="prop-field">
+                  <label>Barcode Type</label>
+                  <select id="col-prop-barcode-type">
+                    <option value="CODE128">CODE128</option>
+                    <option value="CODE39">CODE39</option>
+                    <option value="EAN13">EAN-13</option>
+                    <option value="EAN8">EAN-8</option>
+                    <option value="UPC">UPC-A</option>
+                    <option value="ITF14">ITF-14</option>
+                  </select>
+                </div>
+                <div class="prop-field">
+                  <label class="prop-checkbox-label">
+                    <input type="checkbox" id="col-prop-barcode-showtext" checked />
+                    Show text below barcode
+                  </label>
+                </div>
+              </div>
+              <div class="prop-field" style="margin-top:4px;">
+                <small style="opacity:0.6">Click a header cell to select column</small>
+              </div>
+            </div>
+
+            <!-- Image properties -->
+            <div class="prop-group hidden" id="prop-group-image">
+              <div class="prop-group-title">Image / Logo</div>
+              <div class="prop-field">
+                <label>Upload Image</label>
+                <input type="file" id="prop-image-upload" accept="image/*" />
+              </div>
+              <div id="prop-image-preview-wrap" class="prop-image-preview-wrap hidden">
+                <img id="prop-image-preview" src="" alt="preview" />
+              </div>
+            </div>
+
+            <!-- DateTime properties -->
+            <div class="prop-group hidden" id="prop-group-datetime">
+              <div class="prop-group-title">Date / Time</div>
+              <div class="prop-field">
+                <label>Format</label>
+                <select id="prop-datetime-format">
+                  <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+                  <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+                  <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+                  <option value="DD MMM YYYY">DD MMM YYYY</option>
+                  <option value="DD/MM/YYYY HH:mm">DD/MM/YYYY HH:mm</option>
+                  <option value="MM/DD/YYYY hh:mm A">MM/DD/YYYY hh:mm A</option>
+                  <option value="DD/MM/YYYY HH:mm:ss">DD/MM/YYYY HH:mm:ss</option>
+                  <option value="HH:mm">HH:mm</option>
+                  <option value="HH:mm:ss">HH:mm:ss</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Page Number properties -->
+            <div class="prop-group hidden" id="prop-group-pagenum">
+              <div class="prop-group-title">Page Number</div>
+              <div class="prop-field">
+                <label>Format</label>
+                <select id="prop-pagenum-format">
+                  <option value="Page {n}">Page {n}</option>
+                  <option value="{n}">Number only</option>
+                  <option value="Page {n} of {total}">Page {n} of {total}</option>
+                  <option value="{n} / {total}">{n} / {total}</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Barcode properties -->
+            <div class="prop-group hidden" id="prop-group-barcode">
+              <div class="prop-group-title">Barcode</div>
+              <div class="prop-field">
+                <label>Data Field</label>
+                <select id="prop-barcode-field">
+                  <option value="">— Static value —</option>
+                </select>
+              </div>
+              <div class="prop-field" id="prop-barcode-static-wrap">
+                <label>Static Value</label>
+                <input type="text" id="prop-barcode-value" placeholder="e.g. 123456789" />
+              </div>
+              <div class="prop-field">
+                <label>Barcode Type</label>
+                <select id="prop-barcode-type">
+                  <option value="CODE128">Code 128</option>
+                  <option value="CODE39">Code 39</option>
+                  <option value="EAN13">EAN-13</option>
+                  <option value="EAN8">EAN-8</option>
+                  <option value="UPC">UPC-A</option>
+                  <option value="ITF14">ITF-14</option>
+                  <option value="MSI">MSI</option>
+                </select>
+              </div>
+              <div class="prop-field">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="prop-barcode-show-text" checked />
+                  Show value as text below barcode
+                </label>
+              </div>
+              <div class="prop-row" id="prop-barcode-text-opts">
+                <div class="prop-field">
+                  <label>Text Size (pt)</label>
+                  <input type="number" id="prop-barcode-font-size" min="6" max="24" value="10" />
+                </div>
+                <div class="prop-field">
+                  <label>Text Color</label>
+                  <input type="color" id="prop-barcode-text-color" value="#000000" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="prop-group">
+              <div class="prop-group-title">Actions</div>
+              <div class="prop-actions">
+                <button class="btn btn-ghost btn-sm" id="btn-bring-front">Bring to Front</button>
+                <button class="btn btn-ghost btn-sm" id="btn-send-back">Send to Back</button>
+                <button class="btn btn-ghost btn-sm" id="btn-duplicate">Duplicate</button>
+                <button class="btn btn-danger btn-sm" id="btn-delete-el">Delete</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== RUN VIEW ===================== -->
+<div id="view-run" class="view hidden">
+  <header class="app-header">
+    <button class="btn btn-ghost" id="btn-run-back">&#8592; Back</button>
+    <div class="app-logo"><span class="logo-text">Generate PDF</span></div>
+    <div></div>
+  </header>
+  <main class="run-main">
+    <div class="run-card">
+      <h2 id="run-layout-name">Layout Name</h2>
+      <div class="run-tabs">
+        <button class="run-tab active" data-tab="paste">Paste from Excel</button>
+        <button class="run-tab" data-tab="manual">Enter Manually</button>
+      </div>
+
+      <!-- Paste tab -->
+      <div class="run-tab-content active" id="run-tab-paste">
+        <p class="hint">Copy your data from Excel and paste below. The first row should have column headers matching field names.</p>
+        <textarea id="run-paste-area" rows="8" placeholder="Paste Excel data here (Ctrl+V)&#10;&#10;Example:&#10;CustomerName&#9;InvoiceNo&#9;Date&#10;John Doe&#9;INV-001&#9;2024-01-15"></textarea>
+        <div class="paste-actions">
+          <button class="btn btn-secondary btn-sm" id="btn-parse-paste">Parse Data</button>
+          <span id="paste-status" class="paste-status"></span>
+        </div>
+        <div id="run-parsed-preview" class="run-parsed-preview hidden"></div>
+      </div>
+
+      <!-- Manual tab -->
+      <div class="run-tab-content" id="run-tab-manual">
+        <div id="run-fields-form" class="run-fields-form">
+          <!-- Fields injected by JS -->
+        </div>
+      </div>
+
+      <div class="form-actions" style="margin-top:16px;">
+        <button class="btn btn-primary" id="btn-generate-pdf">&#128196; Generate PDF</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ===================== RUN PREVIEW MODAL ===================== -->
+<div id="modal-run-preview" class="modal-overlay hidden">
+  <div class="modal-run-box">
+    <!-- Left: data input panel -->
+    <div class="modal-run-left">
+      <div class="modal-header">
+        <span>&#9654; Preview with Data</span>
+        <button class="modal-close" id="btn-run-preview-close">&times;</button>
+      </div>
+      <div class="modal-run-left-body">
+        <div class="run-tabs" id="modal-run-tabs">
+          <button class="run-tab active" data-mtab="paste">Paste from Excel</button>
+          <button class="run-tab" data-mtab="manual">Manual Entry</button>
+        </div>
+
+        <!-- Paste tab -->
+        <div class="modal-run-tab-content active" id="modal-run-tab-paste">
+          <p class="hint" style="margin:8px 0 6px;">Copy data from Excel and paste. First row = column headers matching field names.</p>
+          <textarea id="modal-run-paste-area" rows="7" placeholder="Paste Excel data here (Ctrl+V)&#10;&#10;Example:&#10;CustomerName&#9;OrderNo&#10;John Doe&#9;ORD-001"></textarea>
+          <div class="paste-actions">
+            <button class="btn btn-secondary btn-sm" id="modal-btn-parse-paste">Parse Data</button>
+            <span id="modal-paste-status" class="paste-status"></span>
+          </div>
+        </div>
+
+        <!-- Manual tab -->
+        <div class="modal-run-tab-content" id="modal-run-tab-manual">
+          <div id="modal-run-fields-form" class="run-fields-form"></div>
+        </div>
+      </div>
+      <div class="modal-run-left-footer">
+        <button class="btn btn-primary" id="modal-btn-preview" style="flex:1">&#9654; Preview</button>
+        <button class="btn btn-secondary" id="modal-btn-gen-pdf">&#128196; PDF</button>
+      </div>
+    </div>
+
+    <!-- Right: rendered preview -->
+    <div class="modal-run-right">
+      <div id="modal-run-preview-area" class="modal-run-preview-area">
+        <div class="preview-placeholder">
+          <div style="font-size:36px;margin-bottom:12px;">&#128196;</div>
+          <div>Enter data and click <strong>Preview</strong></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== PAGE SETTINGS MODAL ===================== -->
+<div id="modal-page-settings" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span>Page Settings</span>
+      <button class="modal-close" id="btn-page-settings-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Page Size</label>
+          <select id="modal-page-size">
+            <option value="A4">A4 (210×297 mm)</option>
+            <option value="A3">A3 (297×420 mm)</option>
+            <option value="A5">A5 (148×210 mm)</option>
+            <option value="Letter">Letter (215.9×279.4 mm)</option>
+            <option value="Legal">Legal (215.9×355.6 mm)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Orientation</label>
+          <select id="modal-orientation">
+            <option value="portrait">Portrait</option>
+            <option value="landscape">Landscape</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Margins (mm)</label>
+        <div class="margins-simple">
+          <div class="form-group"><label>Top</label><input type="number" id="modal-margin-top" value="15" min="0" /></div>
+          <div class="form-group"><label>Right</label><input type="number" id="modal-margin-right" value="15" min="0" /></div>
+          <div class="form-group"><label>Bottom</label><input type="number" id="modal-margin-bottom" value="15" min="0" /></div>
+          <div class="form-group"><label>Left</label><input type="number" id="modal-margin-left" value="15" min="0" /></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="btn-page-settings-cancel">Cancel</button>
+      <button class="btn btn-primary" id="btn-page-settings-apply">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== CONTEXT MENU ===================== -->
+<div id="context-menu" class="context-menu hidden">
+  <div class="ctx-item" data-action="duplicate">Duplicate</div>
+  <div class="ctx-item" data-action="bring-front">Bring to Front</div>
+  <div class="ctx-item" data-action="send-back">Send to Back</div>
+  <div class="ctx-divider"></div>
+  <div class="ctx-item ctx-danger" data-action="delete">Delete</div>
+</div>
+
+<!-- ===================== LIVE PREVIEW VIEW ===================== -->
+<div id="view-livepreview" class="view hidden">
+  <div class="livepreview-layout">
+    <!-- Left panel: data input -->
+    <div class="livepreview-left">
+      <div class="livepreview-header">
+        <div>
+          <div class="livepreview-title" id="livepreview-name">Live Preview</div>
+          <div class="livepreview-subtitle">Changes saved in the designer auto-refresh here</div>
+        </div>
+        <div class="livepreview-badge" id="livepreview-update-badge" style="display:none">&#9679; Updated</div>
+      </div>
+      <div class="livepreview-body">
+        <div class="run-tabs" id="livepreview-tabs">
+          <button class="run-tab active" data-ltab="paste">Paste from Excel</button>
+          <button class="run-tab" data-ltab="manual">Manual Entry</button>
+        </div>
+        <div class="run-tab-content active" id="livepreview-tab-paste">
+          <p class="hint" style="margin:6px 0;">Paste Excel data below. First row = headers matching field names.</p>
+          <textarea id="livepreview-paste-area" rows="8" placeholder="Paste Excel data here (Ctrl+V)&#10;&#10;Example:&#10;CustomerName&#9;InvoiceNo&#10;John Doe&#9;INV-001"></textarea>
+          <div class="paste-actions">
+            <button class="btn btn-secondary btn-sm" id="livepreview-btn-parse">Parse Data</button>
+            <span id="livepreview-paste-status" class="paste-status"></span>
+          </div>
+        </div>
+        <div class="run-tab-content" id="livepreview-tab-manual">
+          <div id="livepreview-fields-form" class="run-fields-form"></div>
+        </div>
+      </div>
+      <div class="livepreview-footer">
+        <label class="livepreview-auto-label">
+          <input type="checkbox" id="livepreview-auto-refresh" checked />
+          Auto-refresh on save
+        </label>
+        <div class="livepreview-footer-btns">
+          <button class="btn btn-primary" id="livepreview-btn-render">&#9654; Render</button>
+          <button class="btn btn-secondary" id="livepreview-btn-pdf">&#128196; PDF</button>
+        </div>
+      </div>
+    </div>
+    <!-- Right panel: preview area -->
+    <div class="livepreview-right">
+      <div id="livepreview-preview-area" class="livepreview-preview-area">
+        <div class="preview-placeholder" id="livepreview-placeholder">
+          <div style="font-size:40px;margin-bottom:12px;">&#128065;</div>
+          <div style="font-size:15px;font-weight:700;margin-bottom:8px;">Live Preview</div>
+          <div>Enter data and click <strong>Render</strong></div>
+          <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">When you save in the designer tab, the preview will auto-refresh</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden PDF render area -->
+<div id="pdf-render-area" style="position:fixed;left:-9999px;top:0;"></div>
+
+<!-- Image upload (hidden) -->
+<input type="file" id="global-image-upload" accept="image/*" style="display:none" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/config.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/app.js"></script>
+<script src="js/designer.js"></script>
+<script src="js/pdf.js"></script>
+</body>
+</html>
