@@ -3,17 +3,34 @@ create extension if not exists pgcrypto;
 create table if not exists public.printmore_users (
   id uuid primary key default gen_random_uuid(),
   username text not null unique,
-  password_hash text not null,
+  password text not null,
   is_super_user boolean not null default false,
   created_at timestamptz not null default now()
 );
 
 alter table public.printmore_users enable row level security;
 
-insert into public.printmore_users (username, password_hash, is_super_user)
-values ('moraksh', crypt('More400', gen_salt('bf')), true)
+alter table public.printmore_users
+add column if not exists password text;
+
+update public.printmore_users
+set password = 'More400'
+where username = 'moraksh';
+
+update public.printmore_users
+set password = 'changeme'
+where password is null;
+
+alter table public.printmore_users
+alter column password set not null;
+
+alter table public.printmore_users
+drop column if exists password_hash;
+
+insert into public.printmore_users (username, password, is_super_user)
+values ('moraksh', 'More400', true)
 on conflict (username) do update
-set password_hash = excluded.password_hash,
+set password = excluded.password,
     is_super_user = true;
 
 create table if not exists public.layouts (
@@ -86,7 +103,7 @@ as $$
   select u.id, u.username, u.is_super_user
   from public.printmore_users u
   where lower(u.username) = lower(trim(p_username))
-    and u.password_hash = crypt(p_password, u.password_hash)
+    and u.password = p_password
   limit 1;
 $$;
 
@@ -109,7 +126,7 @@ begin
   into v_admin
   from public.printmore_users u
   where lower(u.username) = lower(trim(p_admin_username))
-    and u.password_hash = crypt(p_admin_password, u.password_hash)
+    and u.password = p_admin_password
     and u.is_super_user = true
   limit 1;
 
@@ -121,9 +138,53 @@ begin
     raise exception 'User id and password are required.';
   end if;
 
-  insert into public.printmore_users (username, password_hash, is_super_user)
-  values (trim(p_username), crypt(p_password, gen_salt('bf')), false)
+  insert into public.printmore_users (username, password, is_super_user)
+  values (trim(p_username), p_password, false)
   returning * into v_user;
+
+  return query select v_user.id, v_user.username, v_user.is_super_user;
+end;
+$$;
+
+create or replace function public.reset_printmore_user_password(
+  p_admin_username text,
+  p_admin_password text,
+  p_username text,
+  p_new_password text
+)
+returns table(id uuid, username text, is_super_user boolean)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_admin public.printmore_users;
+  v_user public.printmore_users;
+begin
+  select *
+  into v_admin
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_admin_username))
+    and u.password = p_admin_password
+    and u.is_super_user = true
+  limit 1;
+
+  if v_admin.id is null then
+    raise exception 'Invalid super user password.';
+  end if;
+
+  if trim(coalesce(p_username, '')) = '' or coalesce(p_new_password, '') = '' then
+    raise exception 'User id and new password are required.';
+  end if;
+
+  update public.printmore_users u
+  set password = p_new_password
+  where lower(u.username) = lower(trim(p_username))
+  returning * into v_user;
+
+  if v_user.id is null then
+    raise exception 'User id not found.';
+  end if;
 
   return query select v_user.id, v_user.username, v_user.is_super_user;
 end;
@@ -131,3 +192,4 @@ $$;
 
 grant execute on function public.authenticate_printmore_user(text, text) to anon;
 grant execute on function public.create_printmore_user(text, text, text, text) to anon;
+grant execute on function public.reset_printmore_user_password(text, text, text, text) to anon;

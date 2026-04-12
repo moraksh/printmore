@@ -1004,6 +1004,17 @@ textarea { resize: vertical; }
 }
 .modal-close:hover { color: var(--text-primary); }
 .modal-body { padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.modal-section-title {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.modal-divider {
+  background: var(--border);
+  height: 1px;
+  margin: 2px 0;
+}
 .modal-footer {
   display: flex;
   justify-content: flex-end;

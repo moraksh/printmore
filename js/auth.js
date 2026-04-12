@@ -73,11 +73,26 @@ const AuthStore = (() => {
     return normalizeUser(Array.isArray(data) ? data[0] : data);
   }
 
+  async function resetPassword(adminUsername, adminPassword, username, newPassword) {
+    if (!client) throw new Error('Supabase is not configured.');
+
+    const { data, error } = await client.rpc('reset_printmore_user_password', {
+      p_admin_username: adminUsername,
+      p_admin_password: adminPassword,
+      p_username: username,
+      p_new_password: newPassword,
+    });
+
+    if (error) throw error;
+    return normalizeUser(Array.isArray(data) ? data[0] : data);
+  }
+
   return {
     currentUser,
     login,
     logout,
     addUser,
+    resetPassword,
   };
 })();
 

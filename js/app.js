@@ -523,7 +523,11 @@ function openAddUserModal() {
   document.getElementById('new-user-id').value = '';
   document.getElementById('new-user-password').value = '';
   document.getElementById('admin-password-confirm').value = '';
+  document.getElementById('reset-user-id').value = '';
+  document.getElementById('reset-user-password').value = '';
+  document.getElementById('reset-admin-password-confirm').value = '';
   document.getElementById('add-user-error').classList.add('hidden');
+  document.getElementById('reset-user-error').classList.add('hidden');
   document.getElementById('modal-add-user').classList.remove('hidden');
 }
 
@@ -571,6 +575,44 @@ function initAddUserEvents() {
     } finally {
       btn.disabled = false;
       btn.textContent = 'Create User';
+    }
+  });
+
+  document.getElementById('btn-reset-user-password').addEventListener('click', async () => {
+    const current = getCurrentUser();
+    const username = document.getElementById('reset-user-id').value.trim();
+    const newPassword = document.getElementById('reset-user-password').value;
+    const adminPassword = document.getElementById('reset-admin-password-confirm').value;
+    const error = document.getElementById('reset-user-error');
+    const btn = document.getElementById('btn-reset-user-password');
+
+    error.classList.add('hidden');
+
+    if (!current?.isSuperUser) {
+      error.textContent = 'Only the super user can reset passwords.';
+      error.classList.remove('hidden');
+      return;
+    }
+    if (!username || !newPassword || !adminPassword) {
+      error.textContent = 'Enter user id, new password, and your super user password.';
+      error.classList.remove('hidden');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Resetting...';
+    try {
+      await window.AuthStore.resetPassword(current.username, adminPassword, username, newPassword);
+      document.getElementById('reset-user-id').value = '';
+      document.getElementById('reset-user-password').value = '';
+      document.getElementById('reset-admin-password-confirm').value = '';
+      showToast(`Password reset for "${username}".`);
+    } catch (err) {
+      error.textContent = err.message || 'Could not reset password.';
+      error.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Reset Password';
     }
   });
 }
