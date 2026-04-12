@@ -360,6 +360,7 @@ input, select, textarea, button {
 }
 
 input[type="text"],
+input[type="password"],
 input[type="number"],
 select,
 textarea {
@@ -372,6 +373,7 @@ textarea {
   width: 100%;
 }
 input[type="text"]:focus,
+input[type="password"]:focus,
 input[type="number"]:focus,
 select:focus,
 textarea:focus {
