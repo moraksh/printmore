@@ -22,6 +22,7 @@ let designerInstance = null;
 
 // Parsed data storage for Run view
 let runParsedData = null;
+let manualRowCount = 1;
 
 function getCurrentUser() {
   return window.AuthStore ? window.AuthStore.currentUser() : null;
@@ -263,14 +264,19 @@ function showSetupView(prefill) {
   document.getElementById('layout-name').value = prefill?.name || '';
   document.getElementById('page-size').value = prefill?.page?.size || 'A4';
   document.getElementById('page-orientation').value = prefill?.page?.orientation || 'portrait';
-  document.getElementById('margin-top').value = prefill?.page?.marginTop ?? 15;
-  document.getElementById('margin-bottom').value = prefill?.page?.marginBottom ?? 15;
-  document.getElementById('margin-left').value = prefill?.page?.marginLeft ?? 15;
-  document.getElementById('margin-right').value = prefill?.page?.marginRight ?? 15;
+  document.getElementById('margin-top').value = prefill?.page?.marginTop ?? 5;
+  document.getElementById('margin-bottom').value = prefill?.page?.marginBottom ?? 5;
+  document.getElementById('margin-left').value = prefill?.page?.marginLeft ?? 5;
+  document.getElementById('margin-right').value = prefill?.page?.marginRight ?? 5;
+  document.getElementById('default-font-family').value = prefill?.defaultStyle?.fontFamily || 'Arial';
+  document.getElementById('default-font-size').value = prefill?.defaultStyle?.fontSize || 12;
+  document.getElementById('default-font-color').value = prefill?.defaultStyle?.color || '#000000';
   document.getElementById('field-names-input').value = (prefill?.fields || []).join('\t');
+  document.getElementById('text-names-input').value = (prefill?.texts || []).join('\t');
   const ftList = document.getElementById('field-type-list');
   if (ftList) ftList.innerHTML = '';
   document.getElementById('parsed-fields-preview').classList.add('hidden');
+  document.getElementById('parsed-texts-preview').classList.add('hidden');
 }
 
 function showSetupStep(n) {
@@ -286,20 +292,22 @@ function createNewLayout() {
   const name = document.getElementById('layout-name').value.trim();
   const size = document.getElementById('page-size').value;
   const orientation = document.getElementById('page-orientation').value;
-  const marginTop = parseFloat(document.getElementById('margin-top').value) || 15;
-  const marginBottom = parseFloat(document.getElementById('margin-bottom').value) || 15;
-  const marginLeft = parseFloat(document.getElementById('margin-left').value) || 15;
-  const marginRight = parseFloat(document.getElementById('margin-right').value) || 15;
+  const marginTop = parseFloat(document.getElementById('margin-top').value) || 5;
+  const marginBottom = parseFloat(document.getElementById('margin-bottom').value) || 5;
+  const marginLeft = parseFloat(document.getElementById('margin-left').value) || 5;
+  const marginRight = parseFloat(document.getElementById('margin-right').value) || 5;
+  const defaultStyle = {
+    fontFamily: document.getElementById('default-font-family').value || 'Arial',
+    fontSize: parseFloat(document.getElementById('default-font-size').value) || 12,
+    color: document.getElementById('default-font-color').value || '#000000',
+    fontWeight: 'normal',
+    fontStyle: 'normal',
+    textDecoration: 'none',
+    textAlign: 'left',
+  };
   const fieldText = document.getElementById('field-names-input').value;
   const fields = parseFieldNames(fieldText);
-
-  // Collect field types from UI
-  const fieldMeta = {};
-  document.querySelectorAll('#field-type-list .field-type-row').forEach(row => {
-    const fieldName = row.dataset.field;
-    const activeBtn = row.querySelector('.ftype-btn.active');
-    fieldMeta[fieldName] = { type: activeBtn?.dataset?.type || 'heading' };
-  });
+  const texts = parseFieldNames(document.getElementById('text-names-input').value);
 
   const layout = {
     id: generateId(),
@@ -307,7 +315,9 @@ function createNewLayout() {
     createdAt: new Date().toISOString(),
     page: { size, orientation, marginTop, marginBottom, marginLeft, marginRight },
     fields,
-    fieldMeta,
+    texts,
+    fieldMeta: {},
+    defaultStyle,
     elements: [],
   };
 
@@ -364,6 +374,7 @@ function openRunView(layoutId) {
   if (pasteTab) pasteTab.classList.add('active');
   const pasteTabContent = document.getElementById('run-tab-paste');
   if (pasteTabContent) pasteTabContent.classList.add('active');
+  document.getElementById('btn-add-manual-row')?.classList.add('hidden');
 
   // Populate manual form
   const form = document.getElementById('run-fields-form');
@@ -381,6 +392,34 @@ function openRunView(layoutId) {
       `;
       form.appendChild(group);
     });
+  }
+  manualRowCount = 1;
+  renderManualRows(layout);
+}
+
+function renderManualRows(layout) {
+  const form = document.getElementById('run-fields-form');
+  form.innerHTML = '';
+  const fields = layout.fields || [];
+  if (fields.length === 0) {
+    form.innerHTML = '<p class="hint">This layout has no fields defined.</p>';
+    return;
+  }
+
+  for (let rowIndex = 0; rowIndex < manualRowCount; rowIndex++) {
+    const row = document.createElement('div');
+    row.className = 'manual-entry-row';
+    row.innerHTML = `<div class="manual-row-title">Line ${rowIndex + 1}</div>`;
+    fields.forEach(fieldName => {
+      const group = document.createElement('div');
+      group.className = 'form-group';
+      group.innerHTML = `
+        <label>${escapeHtml(fieldName)}</label>
+        <input type="text" data-row="${rowIndex}" data-field="${escapeHtml(fieldName)}" placeholder="Enter ${escapeHtml(fieldName)}" />
+      `;
+      row.appendChild(group);
+    });
+    form.appendChild(row);
   }
 }
 
@@ -618,6 +657,14 @@ function initAddUserEvents() {
 }
 
 function initSetupEvents() {
+  document.querySelectorAll('.setup-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.setup-tab').forEach(t => t.classList.toggle('active', t === tab));
+      document.querySelectorAll('.setup-tab-content').forEach(c => c.classList.remove('active'));
+      document.getElementById('setup-tab-' + tab.dataset.setupTab)?.classList.add('active');
+    });
+  });
+
   document.getElementById('btn-setup-back').addEventListener('click', () => {
     renderHomeView();
   });
@@ -644,33 +691,24 @@ function initSetupEvents() {
     const text = document.getElementById('field-names-input').value;
     const fields = parseFieldNames(text);
     const preview = document.getElementById('parsed-fields-preview');
-    const list = document.getElementById('field-type-list');
     if (fields.length > 0) {
       preview.classList.remove('hidden');
-      // Build field type rows
-      list.innerHTML = '';
-      fields.forEach(f => {
-        const row = document.createElement('div');
-        row.className = 'field-type-row';
-        row.dataset.field = f;
-        row.innerHTML = `
-          <span class="field-name">${escapeHtml(f)}</span>
-          <div class="field-type-toggle">
-            <button class="ftype-btn heading active" data-type="heading" data-field="${escapeHtml(f)}" title="Single value">Heading</button>
-            <button class="ftype-btn detail" data-type="detail" data-field="${escapeHtml(f)}" title="Repeating rows">Detail</button>
-          </div>
-        `;
-        row.querySelectorAll('.ftype-btn').forEach(btn => {
-          btn.addEventListener('click', () => {
-            row.querySelectorAll('.ftype-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-          });
-        });
-        list.appendChild(row);
-      });
+      preview.innerHTML = `<label>Parsed Fields:</label><div class="parsed-fields-list">${fields.map(f => `<span>${escapeHtml(f)}</span>`).join('')}</div>`;
     } else {
       preview.classList.add('hidden');
-      list.innerHTML = '';
+      preview.innerHTML = '';
+    }
+  });
+
+  document.getElementById('text-names-input').addEventListener('input', () => {
+    const texts = parseFieldNames(document.getElementById('text-names-input').value);
+    const preview = document.getElementById('parsed-texts-preview');
+    if (texts.length > 0) {
+      preview.classList.remove('hidden');
+      preview.innerHTML = `<label>Parsed Text:</label><div class="parsed-fields-list">${texts.map(t => `<span>${escapeHtml(t)}</span>`).join('')}</div>`;
+    } else {
+      preview.classList.add('hidden');
+      preview.innerHTML = '';
     }
   });
 }
@@ -937,7 +975,15 @@ function initRunEvents() {
       const tabId = 'run-tab-' + tab.dataset.tab;
       const el = document.getElementById(tabId);
       if (el) el.classList.add('active');
+      document.getElementById('btn-add-manual-row')?.classList.toggle('hidden', tab.dataset.tab !== 'manual');
     });
+  });
+
+  document.getElementById('btn-add-manual-row')?.addEventListener('click', () => {
+    const layout = getLayoutById(currentLayoutId);
+    if (!layout) return;
+    manualRowCount += 1;
+    renderManualRows(layout);
   });
 
   document.getElementById('btn-run-back').addEventListener('click', () => {
@@ -985,10 +1031,14 @@ function initRunEvents() {
       }
     } else {
       // Manual mode
+      const rows = [];
       document.querySelectorAll('#run-fields-form input[data-field]').forEach(input => {
-        fieldValues[input.dataset.field] = input.value;
+        const rowIndex = parseInt(input.dataset.row || '0', 10);
+        rows[rowIndex] = rows[rowIndex] || {};
+        rows[rowIndex][input.dataset.field] = input.value;
       });
-      detailRows = [fieldValues];
+      detailRows = rows.filter(row => row && Object.values(row).some(v => v !== ''));
+      fieldValues = detailRows[0] || {};
     }
 
     const btn = document.getElementById('btn-generate-pdf');

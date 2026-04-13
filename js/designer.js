@@ -57,6 +57,7 @@ class Designer {
     this._boundMouseMove = this._onMouseMove.bind(this);
     this._boundMouseUp = this._onMouseUp.bind(this);
     this._boundKeyDown = this._onKeyDown.bind(this);
+    this._boundRulerScroll = null;
     this._debounceSaveTimer = null;
   }
 
@@ -64,6 +65,9 @@ class Designer {
   init() {
     this.layout = window.getLayoutById(this.layoutId);
     if (!this.layout) return;
+    this.layout.texts = this.layout.texts || [];
+    this.layout.defaultStyle = this.layout.defaultStyle || {};
+    this.defaultStyle = { ...this.defaultStyle, ...this.layout.defaultStyle };
 
     this.elements = JSON.parse(JSON.stringify(this.layout.elements || []));
 
@@ -71,6 +75,10 @@ class Designer {
     this.gridCanvas = document.getElementById('grid-canvas');
     this.canvasOuter = document.getElementById('canvas-outer');
     this.scrollArea = document.getElementById('canvas-scroll-area');
+    if (!this._boundRulerScroll) {
+      this._boundRulerScroll = this._syncRulersWithScroll.bind(this);
+      this.scrollArea.addEventListener('scroll', this._boundRulerScroll);
+    }
 
     this.zoom = 1;
     const zoomLabelEl = document.getElementById('zoom-label');
@@ -92,6 +100,10 @@ class Designer {
   destroy() {
     document.removeEventListener('mousemove', this._boundMouseMove);
     document.removeEventListener('mouseup', this._boundMouseUp);
+    if (this.scrollArea && this._boundRulerScroll) {
+      this.scrollArea.removeEventListener('scroll', this._boundRulerScroll);
+      this._boundRulerScroll = null;
+    }
     // Clean up context menu
     this._hideContextMenu();
   }
@@ -113,6 +125,7 @@ class Designer {
     this._drawGrid();
     this._drawMarginGuide();
     this._drawRulers();
+    this._syncRulersWithScroll();
     this._drawZoneOverlays();
   }
 
@@ -260,6 +273,14 @@ class Designer {
     rulerV.appendChild(canvasV);
   }
 
+  _syncRulersWithScroll() {
+    if (!this.scrollArea) return;
+    const hCanvas = document.querySelector('#ruler-h canvas');
+    const vCanvas = document.querySelector('#ruler-v canvas');
+    if (hCanvas) hCanvas.style.transform = `translateX(${-this.scrollArea.scrollLeft}px)`;
+    if (vCanvas) vCanvas.style.transform = `translateY(${-this.scrollArea.scrollTop}px)`;
+  }
+
   // ===== Render Elements =====
   renderElements() {
     // Remove all elements except the margin guide and grid-canvas
@@ -300,7 +321,8 @@ class Designer {
 
     switch (el.type) {
       case 'text':     this._buildTextEl(domEl, el); break;
-      case 'field':    this._buildFieldEl(domEl, el); break;
+        case 'field':    this._buildFieldEl(domEl, el); break;
+        case 'user':     this._buildUserEl(domEl, el); break;
       case 'image':
       case 'logo':     this._buildImageEl(domEl, el); break;
       case 'rect':     this._buildRectEl(domEl, el); break;
@@ -361,6 +383,19 @@ class Designer {
     domEl.textContent = label;
     domEl.style.padding = '1px';
     domEl.style.color = el.style?.color || '#3366cc';
+  }
+
+  _buildUserEl(domEl, el) {
+    const inner = document.createElement('div');
+    inner.style.width = '100%';
+    inner.style.height = '100%';
+    inner.style.display = 'flex';
+    inner.style.alignItems = 'center';
+    const align = el.style?.textAlign || 'left';
+    inner.style.justifyContent = align === 'center' ? 'center' : (align === 'right' ? 'flex-end' : 'flex-start');
+    const user = window.AuthStore?.currentUser?.();
+    inner.textContent = user?.username || '{User}';
+    domEl.appendChild(inner);
   }
 
   _buildImageEl(domEl, el) {
@@ -505,9 +540,9 @@ class Designer {
 
   _buildTableEl(domEl, el) {
     domEl.classList.add('el-table');
-    const tbl = el.table || { rows: 3, cols: 3, cells: [], theme: 'plain', borderMode: 'all', colWidths: [1, 1, 1], detailMode: false };
-    const rows = tbl.rows || 3;
-    const cols = tbl.cols || 3;
+    const tbl = el.table || { rows: 2, cols: 4, cells: [], theme: 'plain', borderMode: 'all', colWidths: [1, 1, 1, 1], detailMode: false };
+    const rows = tbl.rows || 2;
+    const cols = tbl.cols || 4;
     const theme = tbl.theme || 'plain';
     const borderMode = tbl.borderMode || 'all';
 
@@ -568,24 +603,27 @@ class Designer {
         if (cp.paddingLeft !== undefined) cell.style.paddingLeft = cp.paddingLeft + 'px';
         if (cp.paddingRight !== undefined) cell.style.paddingRight = cp.paddingRight + 'px';
 
+        const cellStyle = cellData?.style || {};
+
         // Row background
         if (r === 0) {
           cell.style.backgroundColor = headerBg;
           cell.style.color = headerColor;
-          cell.style.fontWeight = '600';
+          cell.style.fontWeight = cellStyle.fontWeight || '600';
         } else {
           cell.style.backgroundColor = (r % 2 === 0) ? altRowBg : rowBg;
           cell.style.color = style.color || '#000000';
+          cell.style.fontWeight = cellStyle.fontWeight || style.fontWeight || 'normal';
         }
 
         // Cell borders
         if (borderMode === 'all') {
-          cell.style.border = `${bw}px solid ${bc}`;
+          cell.style.border = `${bw}px ${style.borderStyle || 'solid'} ${bc}`;
         } else if (borderMode === 'outer') {
           cell.style.border = 'none';
         } else if (borderMode === 'header-outer') {
           cell.style.border = 'none';
-          if (r === 0) cell.style.borderBottom = `2px solid ${bc}`;
+          if (r === 0) cell.style.borderBottom = `2px ${style.borderStyle || 'solid'} ${bc}`;
         } else {
           cell.style.border = 'none';
         }
@@ -659,9 +697,11 @@ class Designer {
           e.preventDefault();
           e.stopPropagation();
           cell.classList.remove('drop-target');
-          const fieldName = e.dataTransfer.getData('text/plain') || this.fieldDragName;
-          if (fieldName) {
-            this._updateTableCell(el.id, r, c, fieldName, null);
+          const itemType = e.dataTransfer.getData('application/x-printmore-item-type') || 'field';
+          const itemName = e.dataTransfer.getData('text/plain') || this.fieldDragName;
+          if (itemName) {
+            if (itemType === 'text') this._updateTableCell(el.id, r, c, null, itemName);
+            else this._updateTableCell(el.id, r, c, itemName, null);
           }
         });
 
@@ -970,6 +1010,41 @@ class Designer {
         this.setActiveTool(btn.dataset.tool);
       });
     });
+
+    document.querySelectorAll('.side-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const target = tab.dataset.sideTab;
+        document.querySelectorAll('.side-tab').forEach(t => t.classList.toggle('active', t === tab));
+        document.getElementById('fields-list')?.classList.toggle('hidden', target !== 'fields');
+        document.getElementById('texts-list')?.classList.toggle('hidden', target !== 'texts');
+        document.querySelector('.field-list-controls:not(#text-list-controls)')?.classList.toggle('hidden', target !== 'fields');
+        document.getElementById('text-list-controls')?.classList.toggle('hidden', target !== 'texts');
+      });
+    });
+
+    document.getElementById('btn-add-field')?.addEventListener('click', () => {
+      const input = document.getElementById('field-add-input');
+      const value = input.value.trim();
+      if (!value) return;
+      this.layout.fields = this.layout.fields || [];
+      if (!this.layout.fields.some(f => f.toLowerCase() === value.toLowerCase())) {
+        this.layout.fields.push(value);
+        this._saveLayoutDefinition();
+      }
+      input.value = '';
+    });
+
+    document.getElementById('btn-add-text')?.addEventListener('click', () => {
+      const input = document.getElementById('text-add-input');
+      const value = input.value.trim();
+      if (!value) return;
+      this.layout.texts = this.layout.texts || [];
+      if (!this.layout.texts.some(t => t.toLowerCase() === value.toLowerCase())) {
+        this.layout.texts.push(value);
+        this._saveLayoutDefinition();
+      }
+      input.value = '';
+    });
     this._updateToolButtons();
     this._initPropertiesEvents();
     this._initContextMenu();
@@ -1036,31 +1111,65 @@ class Designer {
 
   // ===== Fields List =====
   renderFieldsList() {
-    const list = document.getElementById('fields-list');
-    list.innerHTML = '';
-    const fields = this.layout.fields || [];
-    if (fields.length === 0) {
-      list.innerHTML = '<div style="color:var(--text-muted);font-size:11px;padding:4px;">No fields defined.</div>';
-      return;
-    }
-    fields.forEach(fieldName => {
+    const renderList = (listId, items, type) => {
+      const list = document.getElementById(listId);
+      if (!list) return;
+      list.innerHTML = '';
+      if (items.length === 0) {
+        list.innerHTML = `<div style="color:var(--text-muted);font-size:11px;padding:4px;">No ${type === 'field' ? 'fields' : 'text'} defined.</div>`;
+        return;
+      }
+      items.forEach((name, index) => {
       const item = document.createElement('div');
       item.className = 'field-item';
       item.draggable = true;
-      item.dataset.field = fieldName;
-      item.innerHTML = `<span class="field-item-icon">{}</span><span>${window.escapeHtml(fieldName)}</span>`;
+        item.dataset.name = name;
+        item.dataset.type = type;
+        item.innerHTML = `
+          <span class="field-item-icon">${type === 'field' ? '{}' : 'T'}</span>
+          <span class="field-item-name">${window.escapeHtml(name)}</span>
+          <span class="field-item-actions">
+            <button data-action="up" title="Move up">↑</button>
+            <button data-action="down" title="Move down">↓</button>
+          </span>
+        `;
 
       item.addEventListener('dragstart', (e) => {
-        this.fieldDragName = fieldName;
+          this.fieldDragName = name;
         e.dataTransfer.effectAllowed = 'copy';
-        e.dataTransfer.setData('text/plain', fieldName);
+          e.dataTransfer.setData('text/plain', name);
+          e.dataTransfer.setData('application/x-printmore-item-type', type);
       });
       item.addEventListener('dragend', () => {
         this.fieldDragName = null;
       });
+        item.querySelector('[data-action="up"]').addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (index <= 0) return;
+          [items[index - 1], items[index]] = [items[index], items[index - 1]];
+          this._saveLayoutDefinition();
+        });
+        item.querySelector('[data-action="down"]').addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (index >= items.length - 1) return;
+          [items[index + 1], items[index]] = [items[index], items[index + 1]];
+          this._saveLayoutDefinition();
+        });
 
       list.appendChild(item);
     });
+    };
+
+    renderList('fields-list', this.layout.fields || [], 'field');
+    renderList('texts-list', this.layout.texts || [], 'text');
+  }
+
+  _saveLayoutDefinition() {
+    this.layout.defaultStyle = { ...this.defaultStyle };
+    this.layout.elements = JSON.parse(JSON.stringify(this.elements));
+    window.saveLayout(this.layout);
+    this.renderFieldsList();
+    this._populateFieldSelects();
   }
 
   // ===== Canvas Events =====
@@ -1075,8 +1184,9 @@ class Designer {
 
   _onCanvasDrop(e) {
     e.preventDefault();
-    const fieldName = e.dataTransfer.getData('text/plain') || this.fieldDragName;
-    if (!fieldName) return;
+    const itemType = e.dataTransfer.getData('application/x-printmore-item-type') || 'field';
+    const itemName = e.dataTransfer.getData('text/plain') || this.fieldDragName;
+    if (!itemName) return;
 
     const rect = this.pageCanvas.getBoundingClientRect();
     const xPx = e.clientX - rect.left;
@@ -1085,8 +1195,12 @@ class Designer {
     const yMm = this._pxToMm(yPx);
 
     this.saveToHistory();
-    const el = this._createElementData('field', xMm, yMm);
-    el.fieldName = fieldName;
+    const el = this._createElementData(itemType === 'text' ? 'text' : 'field', xMm, yMm);
+    if (itemType === 'text') {
+      el.content = itemName;
+    } else {
+      el.fieldName = itemName;
+    }
     this.elements.push(el);
     this.renderElements();
     this.selectElement(el.id);
@@ -1247,7 +1361,7 @@ class Designer {
         borderStyle: 'solid',
         opacity: 1,
       },
-      table: { rows: 3, cols: 3, cells: [], theme: 'plain', borderMode: 'all', colWidths: [1,1,1], rowHeights: [1,1,1], detailMode: false, colProps: [] },
+      table: { rows: 2, cols: 4, cells: [], theme: 'plain', borderMode: 'all', colWidths: [1,1,1,1], rowHeights: [1,1], detailMode: false, colProps: [] },
     };
     return el;
   }
@@ -1256,11 +1370,12 @@ class Designer {
     switch (type) {
       case 'text':     return { width: 60, height: 10 };
       case 'field':    return { width: 60, height: 10 };
+      case 'user':     return { width: 45, height: 10 };
       case 'image':
       case 'logo':     return { width: 40, height: 30 };
       case 'rect':     return { width: 60, height: 30 };
       case 'line':     return { width: 80, height: 4 };
-      case 'table':    return { width: 120, height: 40 };
+      case 'table':    return { width: 140, height: 28 };
       case 'datetime': return { width: 50, height: 8 };
       case 'pagenum':  return { width: 30, height: 8 };
       case 'barcode':  return { width: 45, height: 22 };
@@ -1709,7 +1824,7 @@ class Designer {
 
     const style = el.style || {};
     // Typography
-    const hasText = ['text','field','table','datetime','pagenum'].includes(el.type);
+    const hasText = ['text','field','user','table','datetime','pagenum'].includes(el.type);
     document.getElementById('prop-group-typography').classList.toggle('hidden', !hasText);
     if (hasText) {
       document.getElementById('prop-font-family').value = style.fontFamily || 'Arial';
@@ -1925,6 +2040,14 @@ class Designer {
             dd.remove();
           });
           dd.appendChild(clearBtn);
+          const boldBtn = document.createElement('button');
+          boldBtn.textContent = cellData?.style?.fontWeight === 'bold' ? 'Bold: On' : 'Bold: Off';
+          boldBtn.style.cssText = 'margin-top:4px;width:100%;padding:2px 6px;background:none;border:1px solid var(--border);color:var(--text-primary);font-size:11px;cursor:pointer;border-radius:var(--radius-sm);font-weight:bold;';
+          boldBtn.addEventListener('click', () => {
+            this._updateTableCellStyle(el.id, r, c, { fontWeight: cellData?.style?.fontWeight === 'bold' ? 'normal' : 'bold' });
+            dd.remove();
+          });
+          dd.appendChild(boldBtn);
           cell.style.position = 'relative';
           cell.appendChild(dd);
           input.focus();
@@ -1954,8 +2077,12 @@ class Designer {
         cell.addEventListener('drop', (e) => {
           e.preventDefault();
           cell.classList.remove('drop-target');
-          const fieldName = e.dataTransfer.getData('text/plain');
-          if (fieldName) this._updateTableCell(el.id, r, c, fieldName, null);
+          const itemType = e.dataTransfer.getData('application/x-printmore-item-type') || 'field';
+          const itemName = e.dataTransfer.getData('text/plain');
+          if (itemName) {
+            if (itemType === 'text') this._updateTableCell(el.id, r, c, null, itemName);
+            else this._updateTableCell(el.id, r, c, itemName, null);
+          }
         });
 
         container.appendChild(cell);
@@ -1974,6 +2101,22 @@ class Designer {
     } else {
       el.table.cells.push({ row, col, fieldName: fieldName || '', content: content || '' });
     }
+    this.saveToHistory();
+    this.renderElements();
+    this.selectElement(elementId);
+    this._saveLayoutElements();
+  }
+
+  _updateTableCellStyle(elementId, row, col, stylePatch) {
+    const el = this._findElement(elementId);
+    if (!el) return;
+    if (!el.table.cells) el.table.cells = [];
+    let existing = el.table.cells.find(c => c.row === row && c.col === col);
+    if (!existing) {
+      existing = { row, col, fieldName: '', content: '', style: {} };
+      el.table.cells.push(existing);
+    }
+    existing.style = { ...(existing.style || {}), ...stylePatch };
     this.saveToHistory();
     this.renderElements();
     this.selectElement(elementId);
@@ -2155,8 +2298,8 @@ class Designer {
       const el = this._findElement(this.selectedId);
       if (!el || el.type !== 'table') return;
       el.table = el.table || {};
-      el.table.rows = Math.max(1, parseInt(document.getElementById('prop-table-rows').value) || 3);
-      el.table.cols = Math.max(1, parseInt(document.getElementById('prop-table-cols').value) || 3);
+      el.table.rows = Math.max(1, parseInt(document.getElementById('prop-table-rows').value) || 2);
+      el.table.cols = Math.max(1, parseInt(document.getElementById('prop-table-cols').value) || 4);
       // Reset colWidths / rowHeights when count changes
       const newCols = el.table.cols;
       const newRows = el.table.rows;
@@ -2425,6 +2568,7 @@ class Designer {
         this._applyTextStyle(domEl, style);
         break;
       case 'field':
+      case 'user':
         this._applyTextStyle(domEl, style);
         domEl.style.color = style.color || '#3366cc';
         break;
@@ -2577,6 +2721,7 @@ class Designer {
   getLayout() {
     return {
       ...this.layout,
+      defaultStyle: { ...this.defaultStyle },
       elements: JSON.parse(JSON.stringify(this.elements)),
     };
   }
@@ -2599,6 +2744,7 @@ class Designer {
     const layout = window.getLayoutById(this.layoutId);
     if (!layout) return;
     layout.elements = JSON.parse(JSON.stringify(this.elements));
+    layout.defaultStyle = { ...this.defaultStyle };
     window.saveLayout(layout);
   }
 

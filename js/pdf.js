@@ -145,6 +145,7 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
       switch (el.type) {
         case 'text':     buildTextDOM(wrapper, el, fieldValues); break;
         case 'field':    buildFieldDOM(wrapper, el, fieldValues); break;
+        case 'user':     buildUserDOM(wrapper, el); break;
         case 'image':
         case 'logo':     buildImageDOM(wrapper, el); break;
         case 'rect':     buildRectDOM(wrapper, el); break;
@@ -181,9 +182,12 @@ function buildElementDOM(el, fieldValues, scale, detailRows) {
     case 'text':
       buildTextDOM(wrapper, el, fieldValues);
       break;
-    case 'field':
-      buildFieldDOM(wrapper, el, fieldValues);
-      break;
+      case 'field':
+        buildFieldDOM(wrapper, el, fieldValues);
+        break;
+      case 'user':
+        buildUserDOM(wrapper, el);
+        break;
     case 'image':
     case 'logo':
       buildImageDOM(wrapper, el);
@@ -253,6 +257,16 @@ function buildFieldDOM(wrapper, el, fieldValues) {
   applyTextStyles(el, inner, style);
   const val = el.fieldName ? (fieldValues[el.fieldName] !== undefined ? fieldValues[el.fieldName] : '') : '';
   inner.textContent = val;
+  wrapper.appendChild(inner);
+}
+
+function buildUserDOM(wrapper, el) {
+  const inner = document.createElement('div');
+  inner.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;';
+  const align = el.style?.textAlign || 'left';
+  inner.style.justifyContent = align === 'center' ? 'center' : (align === 'right' ? 'flex-end' : 'flex-start');
+  const user = window.AuthStore?.currentUser?.();
+  inner.textContent = user?.username || '';
   wrapper.appendChild(inner);
 }
 
@@ -380,7 +394,7 @@ function buildBarcodeDOM(wrapper, el, fieldValues) {
 }
 
 function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
-  const tbl = el.table || { rows: 3, cols: 3, cells: [], theme: 'plain', borderMode: 'all' };
+  const tbl = el.table || { rows: 2, cols: 4, cells: [], theme: 'plain', borderMode: 'all' };
   const isDetail = tbl.detailMode === true;
   const cols = tbl.cols || 3;
   const cells = tbl.cells || [];
@@ -408,6 +422,7 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
   const borderMode = tbl.borderMode || 'all';
   const bc = style.borderColor || '#cccccc';
   const bw = Math.max(1, style.borderWidth !== undefined ? style.borderWidth : 1);
+  const bs = style.borderStyle || 'solid';
   const colProps = tbl.colProps || [];
 
   const tableEl = document.createElement('table');
@@ -470,22 +485,23 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
       }
 
       if (borderMode === 'all') {
-        td.style.border = `${bw}px solid ${bc}`;
+        td.style.border = `${bw}px ${bs} ${bc}`;
       } else if (borderMode === 'outer') {
         td.style.border = 'none';
-        if (r === 0) td.style.borderTop = `${bw}px solid ${bc}`;
-        if (r === rows - 1) td.style.borderBottom = `${bw}px solid ${bc}`;
-        if (c === 0) td.style.borderLeft = `${bw}px solid ${bc}`;
-        if (c === cols - 1) td.style.borderRight = `${bw}px solid ${bc}`;
+        if (r === 0) td.style.borderTop = `${bw}px ${bs} ${bc}`;
+        if (r === rows - 1) td.style.borderBottom = `${bw}px ${bs} ${bc}`;
+        if (c === 0) td.style.borderLeft = `${bw}px ${bs} ${bc}`;
+        if (c === cols - 1) td.style.borderRight = `${bw}px ${bs} ${bc}`;
       } else if (borderMode === 'header-outer') {
         td.style.border = 'none';
-        if (r === 0) td.style.borderBottom = `2px solid ${bc}`;
+        if (r === 0) td.style.borderBottom = `2px ${bs} ${bc}`;
       } else {
         td.style.border = 'none';
       }
 
       // Find cell definition from designer
       const cellDef = cells.find(cl => cl.row === r && cl.col === c);
+      if (cellDef?.style?.fontWeight) td.style.fontWeight = cellDef.style.fontWeight;
 
       if (isHeaderRow) {
         // Header row: show cell content or field name as label

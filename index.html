@@ -150,10 +150,39 @@
         <div class="form-group">
           <label>Margins (mm)</label>
           <div class="margins-simple">
-            <div class="form-group"><label>Top</label><input type="number" id="margin-top" value="15" min="0" /></div>
-            <div class="form-group"><label>Right</label><input type="number" id="margin-right" value="15" min="0" /></div>
-            <div class="form-group"><label>Bottom</label><input type="number" id="margin-bottom" value="15" min="0" /></div>
-            <div class="form-group"><label>Left</label><input type="number" id="margin-left" value="15" min="0" /></div>
+            <div class="form-group"><label>Top</label><input type="number" id="margin-top" value="5" min="0" /></div>
+            <div class="form-group"><label>Right</label><input type="number" id="margin-right" value="5" min="0" /></div>
+            <div class="form-group"><label>Bottom</label><input type="number" id="margin-bottom" value="5" min="0" /></div>
+            <div class="form-group"><label>Left</label><input type="number" id="margin-left" value="5" min="0" /></div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Default Text Style</label>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Font</label>
+              <select id="default-font-family">
+                <option value="Arial">Arial</option>
+                <option value="Calibri">Calibri</option>
+                <option value="Cambria">Cambria</option>
+                <option value="Helvetica">Helvetica</option>
+                <option value="Times New Roman">Times New Roman</option>
+                <option value="Courier New">Courier New</option>
+                <option value="Georgia">Georgia</option>
+                <option value="Verdana">Verdana</option>
+                <option value="Trebuchet MS">Trebuchet MS</option>
+                <option value="Tahoma">Tahoma</option>
+                <option value="Segoe UI">Segoe UI</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Size</label>
+              <input type="number" id="default-font-size" value="12" min="6" max="144" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Color</label>
+            <input type="color" id="default-font-color" value="#000000" />
           </div>
         </div>
         <div class="form-actions">
@@ -163,8 +192,13 @@
 
       <!-- Step 2 -->
       <div id="setup-step-2" class="setup-card hidden">
-        <h2>Field Names</h2>
-        <p class="hint">Copy columns from Excel and paste below. Each non-empty cell becomes a field name.</p>
+        <h2>Names</h2>
+        <div class="setup-tabs">
+          <button class="setup-tab active" data-setup-tab="fields">Field Names</button>
+          <button class="setup-tab" data-setup-tab="texts">Text</button>
+        </div>
+        <div class="setup-tab-content active" id="setup-tab-fields">
+        <p class="hint">Paste Excel column headers. These become data fields while running the layout.</p>
         <div class="form-group">
           <label>Paste Field Names</label>
           <textarea id="field-names-input" rows="5" placeholder="CustomerName&#9;InvoiceNo&#9;Date&#10;ItemDesc&#9;Qty&#9;Price"></textarea>
@@ -176,6 +210,15 @@
             <strong>Detail</strong> = repeating rows (e.g. item description, quantity)
           </div>
           <div id="field-type-list" class="field-type-list"></div>
+        </div>
+        </div>
+        <div class="setup-tab-content" id="setup-tab-texts">
+          <p class="hint">Paste reusable label text. These can be dragged onto the layout but are not matched with Excel data.</p>
+          <div class="form-group">
+            <label>Paste Text Labels</label>
+            <textarea id="text-names-input" rows="5" placeholder="Invoice No&#9;Customer Name&#10;Date&#9;Total"></textarea>
+          </div>
+          <div id="parsed-texts-preview" class="parsed-fields-preview hidden"></div>
         </div>
         <div class="form-actions">
           <button class="btn btn-ghost" id="btn-step2-back">&larr; Back</button>
@@ -261,14 +304,31 @@
             <span class="tool-icon">&#10075;&#10076;</span>
             <span class="tool-label">Barcode</span>
           </button>
+          <button class="tool-btn" data-tool="user" title="Logged-in User">
+            <span class="tool-icon">U</span>
+            <span class="tool-label">User</span>
+          </button>
         </div>
       </div>
 
       <div class="panel-section fields-panel-section">
-        <div class="panel-section-title">Fields <span class="hint-text">(drag to canvas)</span></div>
+        <div class="panel-section-title">Fields &amp; Text <span class="hint-text">(drag to canvas)</span></div>
+        <div class="side-tabs">
+          <button class="side-tab active" data-side-tab="fields">Fields</button>
+          <button class="side-tab" data-side-tab="texts">Text</button>
+        </div>
+        <div class="field-list-controls">
+          <input type="text" id="field-add-input" placeholder="Add field" />
+          <button class="btn btn-secondary btn-sm" id="btn-add-field">Add</button>
+        </div>
         <div id="fields-list" class="fields-list">
           <!-- Field items injected by JS -->
         </div>
+        <div class="field-list-controls hidden" id="text-list-controls">
+          <input type="text" id="text-add-input" placeholder="Add text" />
+          <button class="btn btn-secondary btn-sm" id="btn-add-text">Add</button>
+        </div>
+        <div id="texts-list" class="fields-list hidden"></div>
       </div>
     </div>
 
@@ -429,12 +489,18 @@
                 <label>Font Family</label>
                 <select id="prop-font-family">
                   <option value="Arial">Arial</option>
+                  <option value="Calibri">Calibri</option>
+                  <option value="Cambria">Cambria</option>
                   <option value="Helvetica">Helvetica</option>
                   <option value="Times New Roman">Times New Roman</option>
                   <option value="Courier New">Courier New</option>
                   <option value="Georgia">Georgia</option>
                   <option value="Verdana">Verdana</option>
                   <option value="Trebuchet MS">Trebuchet MS</option>
+                  <option value="Tahoma">Tahoma</option>
+                  <option value="Segoe UI">Segoe UI</option>
+                  <option value="Impact">Impact</option>
+                  <option value="Lucida Console">Lucida Console</option>
                 </select>
               </div>
               <div class="prop-row">
@@ -538,11 +604,11 @@
               <div class="prop-row">
                 <div class="prop-field">
                   <label>Rows</label>
-                  <input type="number" id="prop-table-rows" min="1" max="50" value="3" />
+                  <input type="number" id="prop-table-rows" min="1" max="50" value="2" />
                 </div>
                 <div class="prop-field">
                   <label>Cols</label>
-                  <input type="number" id="prop-table-cols" min="1" max="20" value="3" />
+                  <input type="number" id="prop-table-cols" min="1" max="20" value="4" />
                 </div>
               </div>
               <div class="prop-field">
@@ -790,6 +856,7 @@
       </div>
 
       <div class="form-actions" style="margin-top:16px;">
+        <button class="btn btn-secondary hidden" id="btn-add-manual-row">+ Add Line</button>
         <button class="btn btn-primary" id="btn-generate-pdf">&#128196; Generate PDF</button>
       </div>
     </div>
