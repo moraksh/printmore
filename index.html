@@ -41,7 +41,8 @@
     </div>
     <div class="home-header-actions">
       <span id="current-user-label" class="current-user-label"></span>
-      <button class="btn btn-secondary hidden" id="btn-add-user">Add User</button>
+      <button class="btn btn-secondary hidden" id="btn-add-user">Maintain User</button>
+      <button class="btn btn-secondary hidden" id="btn-smart-ui">Smart UI</button>
       <button class="btn btn-secondary" id="btn-import-layout" title="Import a layout from a JSON file">&#8593; Import Layout</button>
       <button class="btn btn-primary" id="btn-new-layout">+ New Layout</button>
       <button class="btn btn-ghost" id="btn-logout">Logout</button>
@@ -71,6 +72,7 @@
       <div class="modal-tabs">
         <button class="modal-tab active" data-user-tab="create">Create User</button>
         <button class="modal-tab" data-user-tab="reset">Reset Password</button>
+        <button class="modal-tab" data-user-tab="status">Status</button>
       </div>
       <div class="user-tab-content active" id="user-tab-create">
       <div class="form-group">
@@ -80,9 +82,16 @@
       <div class="form-group">
         <label>User Type</label>
         <select id="new-user-role">
-          <option value="user">User - run, import, export</option>
-          <option value="designer">Designer - design and run</option>
-          <option value="super">Super User - full access</option>
+          <option value="user">User</option>
+          <option value="designer">Designer</option>
+          <option value="super">Super User</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Status</label>
+        <select id="new-user-active">
+          <option value="true">Active</option>
+          <option value="false">Deactive</option>
         </select>
       </div>
       <div class="form-group">
@@ -110,11 +119,73 @@
       </div>
       <div id="reset-user-error" class="form-error hidden"></div>
       </div>
+      <div class="user-tab-content" id="user-tab-status">
+      <div class="form-group">
+        <label>User ID</label>
+        <input type="text" id="status-user-id" autocomplete="off" />
+      </div>
+      <div class="form-group">
+        <label>Status</label>
+        <select id="status-user-active">
+          <option value="true">Active</option>
+          <option value="false">Deactive</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Your Super User Password</label>
+        <input type="password" id="status-admin-password-confirm" autocomplete="current-password" />
+      </div>
+      <div id="status-user-error" class="form-error hidden"></div>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" id="btn-add-user-cancel">Cancel</button>
       <button class="btn btn-secondary hidden" id="btn-reset-user-password">Reset Password</button>
+      <button class="btn btn-secondary hidden" id="btn-update-user-status">Update Status</button>
       <button class="btn btn-primary" id="btn-add-user-save">Create User</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== SMART UI MODAL ===================== -->
+<div id="modal-smart-ui" class="modal-overlay hidden">
+  <div class="modal-box modal-box-sm">
+    <div class="modal-header">
+      <h3>Smart UI</h3>
+      <button class="modal-close" id="btn-smart-ui-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-tabs">
+        <button class="modal-tab active" data-smart-tab="header">Header</button>
+        <button class="modal-tab" data-smart-tab="table">Table</button>
+        <button class="modal-tab" data-smart-tab="footer">Footer</button>
+      </div>
+      <div class="smart-tab-content active" id="smart-tab-header">
+        <div class="smart-rule-entry">
+          <input type="text" id="smart-header-input" placeholder="Add header field keyword" autocomplete="off" />
+          <button class="btn btn-secondary" id="btn-smart-header-add">Add</button>
+        </div>
+        <div class="smart-rule-list" id="smart-header-list"></div>
+      </div>
+      <div class="smart-tab-content" id="smart-tab-table">
+        <div class="smart-rule-entry">
+          <input type="text" id="smart-table-input" placeholder="Add table field keyword" autocomplete="off" />
+          <button class="btn btn-secondary" id="btn-smart-table-add">Add</button>
+        </div>
+        <div class="smart-rule-list" id="smart-table-list"></div>
+      </div>
+      <div class="smart-tab-content" id="smart-tab-footer">
+        <div class="smart-rule-entry">
+          <input type="text" id="smart-footer-input" placeholder="Add footer field keyword" autocomplete="off" />
+          <button class="btn btn-secondary" id="btn-smart-footer-add">Add</button>
+        </div>
+        <div class="smart-rule-list" id="smart-footer-list"></div>
+      </div>
+      <div id="smart-ui-error" class="form-error hidden"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="btn-smart-ui-cancel">Cancel</button>
+      <button class="btn btn-primary" id="btn-smart-ui-save">Save Smart UI</button>
     </div>
   </div>
 </div>
@@ -132,6 +203,8 @@
         <div class="step active" id="step-ind-1"><span>1</span> Page Setup</div>
         <div class="step-divider"></div>
         <div class="step" id="step-ind-2"><span>2</span> Field Names</div>
+        <div class="step-divider"></div>
+        <div class="step" id="step-ind-3"><span>3</span> Page Layout</div>
       </div>
 
       <!-- Step 1 -->
@@ -226,20 +299,23 @@
           </div>
           <div id="parsed-texts-preview" class="parsed-fields-preview hidden"></div>
         </div>
-        <div class="form-group">
-          <label>Layout Template</label>
-          <select id="layout-template">
-            <option value="blank">Blank Layout</option>
-            <option value="load-list">Load List</option>
-            <option value="gr-document">GR Document</option>
-            <option value="freight-forward">Freight Forward Document</option>
-            <option value="delivery-note">Delivery Note</option>
-            <option value="pick-list">Pick List</option>
-            <option value="smart">Smart Suggestion</option>
-          </select>
-        </div>
         <div class="form-actions">
           <button class="btn btn-ghost" id="btn-step2-back">&larr; Back</button>
+          <button class="btn btn-primary" id="btn-step2-next">Next &rarr;</button>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div id="setup-step-3" class="setup-card hidden">
+        <h2>Page Layout</h2>
+        <p class="hint">Choose a starting layout. You can preview it here, then edit everything in the designer.</p>
+        <input type="hidden" id="layout-template" value="blank" />
+        <div id="template-options" class="template-options"></div>
+        <div class="template-preview-wrap">
+          <div id="template-preview" class="template-preview"></div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-ghost" id="btn-step3-back">&larr; Back</button>
           <button class="btn btn-primary" id="btn-create-layout">Create Layout &amp; Open Designer</button>
         </div>
       </div>
@@ -298,11 +374,11 @@
             <span class="tool-icon">&#128247;</span>
             <span class="tool-label">Image</span>
           </button>
-          <button class="tool-btn" data-tool="rect" title="Rectangle">
-            <span class="tool-icon">&#9644;</span>
-            <span class="tool-label">Rect</span>
-          </button>
-          <button class="tool-btn" data-tool="line" title="Line">
+            <button class="tool-btn" data-tool="rect" title="Rectangle">
+              <span class="tool-icon">&#9644;</span>
+              <span class="tool-label">Rect</span>
+            </button>
+            <button class="tool-btn" data-tool="line" title="Line">
             <span class="tool-icon">&#9135;</span>
             <span class="tool-label">Line</span>
           </button>

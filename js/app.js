@@ -23,6 +23,7 @@ let designerInstance = null;
 // Parsed data storage for Run view
 let runParsedData = null;
 let manualRowCount = 1;
+let smartRulesDraft = null;
 
 function getCurrentUser() {
   return window.AuthStore ? window.AuthStore.currentUser() : null;
@@ -32,10 +33,12 @@ function updateUserChrome() {
   const user = getCurrentUser();
   const label = document.getElementById('current-user-label');
   const addUserBtn = document.getElementById('btn-add-user');
+  const smartUiBtn = document.getElementById('btn-smart-ui');
   const canDesign = user?.role === 'designer' || user?.role === 'super';
 
   if (label) label.textContent = user ? `User: ${user.username}` : '';
   if (addUserBtn) addUserBtn.classList.toggle('hidden', !user?.isSuperUser);
+  if (smartUiBtn) smartUiBtn.classList.toggle('hidden', !user?.isSuperUser);
   document.getElementById('btn-new-layout')?.classList.toggle('hidden', !canDesign);
 }
 
@@ -57,6 +60,7 @@ async function loadCurrentUserLayouts() {
 
   if (window.LayoutStore) {
     await window.LayoutStore.init(user);
+    await window.LayoutStore.loadSmartRules?.();
     updateStorageStatus();
   }
   updateUserChrome();
@@ -282,15 +286,20 @@ function showSetupView(prefill) {
   if (ftList) ftList.innerHTML = '';
   document.getElementById('parsed-fields-preview').classList.add('hidden');
   document.getElementById('parsed-texts-preview').classList.add('hidden');
+  renderTemplateOptions();
 }
 
 function showSetupStep(n) {
   setupStep = n;
   document.getElementById('setup-step-1').classList.toggle('hidden', n !== 1);
   document.getElementById('setup-step-2').classList.toggle('hidden', n !== 2);
+  document.getElementById('setup-step-3').classList.toggle('hidden', n !== 3);
   document.getElementById('step-ind-1').classList.toggle('active', n === 1);
   document.getElementById('step-ind-1').classList.toggle('done', n > 1);
   document.getElementById('step-ind-2').classList.toggle('active', n === 2);
+  document.getElementById('step-ind-2').classList.toggle('done', n > 2);
+  document.getElementById('step-ind-3').classList.toggle('active', n === 3);
+  if (n === 3) renderTemplateOptions();
 }
 
 function createNewLayout() {
@@ -331,66 +340,191 @@ function createNewLayout() {
   openDesigner(layout.id);
 }
 
+const LAYOUT_TEMPLATES = [
+  { id: 'blank', label: 'Blank Layout', meta: 'Start with an empty page.', pattern: 'blank' },
+  { id: 'layout-1', label: 'Layout 1', meta: 'Header block with repeating line table.', pattern: 'receipt' },
+  { id: 'layout-2', label: 'Layout 2', meta: 'Large item table with compact header.', pattern: 'pick' },
+  { id: 'layout-3', label: 'Layout 3', meta: 'Shipping-style header and carrier section.', pattern: 'ship' },
+  { id: 'layout-4', label: 'Layout 4', meta: 'Document summary with signature/footer area.', pattern: 'delivery' },
+  { id: 'layout-5', label: 'Layout 5', meta: 'Wide operational checklist style.', pattern: 'checklist' },
+  { id: 'smart', label: 'Layout 6', meta: 'Suggests a structure from your fields.', pattern: 'smart' },
+];
+
+function renderTemplateOptions() {
+  const container = document.getElementById('template-options');
+  if (!container) return;
+  const selected = document.getElementById('layout-template').value || 'blank';
+  container.innerHTML = '';
+  LAYOUT_TEMPLATES.forEach(tpl => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'template-option' + (tpl.id === selected ? ' active' : '');
+    btn.dataset.template = tpl.id;
+    btn.innerHTML = `<div class="template-option-title">${escapeHtml(tpl.label)}</div><div class="template-option-meta">${escapeHtml(tpl.meta)}</div>`;
+    btn.addEventListener('click', () => {
+      document.getElementById('layout-template').value = tpl.id;
+      renderTemplateOptions();
+    });
+    container.appendChild(btn);
+  });
+  renderTemplatePreview(selected);
+}
+
+function getSmartRules() {
+  return window.LayoutStore?.getSmartRules?.() || {
+    header: ['customer', 'date', 'document', 'order', 'reference'],
+    table: ['item', 'sku', 'description', 'quantity', 'qty'],
+    footer: ['signature', 'remarks', 'total', 'user'],
+  };
+}
+
+function compactKey(value) {
+  return String(value || '').toLowerCase().replace(/[\s_-]+/g, '');
+}
+
+function matchesSmartRule(field, rules) {
+  const key = compactKey(field);
+  return (rules || []).some(rule => {
+    const ruleKey = compactKey(rule);
+    return ruleKey && (key.includes(ruleKey) || ruleKey.includes(key));
+  });
+}
+
+function classifyLayoutFields(fields) {
+  const sourceFields = fields || [];
+  const rules = getSmartRules();
+  const buckets = { header: [], table: [], footer: [] };
+  sourceFields.forEach(field => {
+    if (matchesSmartRule(field, rules.footer)) {
+      buckets.footer.push(field);
+    } else if (matchesSmartRule(field, rules.table)) {
+      buckets.table.push(field);
+    } else if (matchesSmartRule(field, rules.header)) {
+      buckets.header.push(field);
+    } else if (buckets.header.length < 4) {
+      buckets.header.push(field);
+    } else {
+      buckets.table.push(field);
+    }
+  });
+
+  if (!buckets.table.length && sourceFields.length > 4) buckets.table = sourceFields.slice(4);
+  if (!buckets.table.length) buckets.table = sourceFields.slice(0, Math.min(4, sourceFields.length));
+  return buckets;
+}
+
+function templateContext(fields) {
+  const allFields = fields.length ? fields : ['Customer', 'Date', 'Item', 'Qty', 'Remarks'];
+  const buckets = classifyLayoutFields(allFields);
+  return {
+    fields: allFields,
+    header: buckets.header.length ? buckets.header : allFields.slice(0, 3),
+    table: buckets.table.length ? buckets.table : allFields.slice(0, 4),
+    footer: buckets.footer.length ? buckets.footer : ['Remarks', 'Signature'],
+  };
+}
+
+function renderTemplatePreview(templateId) {
+  const preview = document.getElementById('template-preview');
+  if (!preview) return;
+  const ctx = templateContext(parseFieldNames(document.getElementById('field-names-input').value));
+  if (templateId === 'blank') {
+    preview.innerHTML = '<div class="tpl-title">Blank Layout</div><div class="tpl-line"></div>';
+    return;
+  }
+  const pattern = templateId === 'smart' ? smartTemplateKey({ name: document.getElementById('layout-name').value, fields: ctx.fields }) : templateId;
+  const tableLabels = ctx.table.length ? ctx.table : ctx.fields.slice(0, 1);
+  const box = (label, left, top, width = 96, height = 11) => `<div class="tpl-box" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px;"><span style="font-size:7px;position:absolute;left:4px;top:2px;">${escapeHtml(label)}</span></div>`;
+  const table = (top, rows = 4, left = 16, width = 223) => `
+    <table class="tpl-table" style="top:${top}px;left:${left}px;width:${width}px;">
+      <tr>${tableLabels.map(l => `<th>${escapeHtml(l)}</th>`).join('')}</tr>
+      ${Array.from({ length: rows }).map(() => `<tr>${tableLabels.map(() => '<td>&nbsp;</td>').join('')}</tr>`).join('')}
+    </table>`;
+  let body = '';
+  if (pattern === 'layout-1') {
+    body = ctx.header.slice(0, 4).map((l, i) => box(l, 16 + (i % 2) * 112, 46 + Math.floor(i / 2) * 13, 96, 11)).join('') + table(76, 4);
+  } else if (pattern === 'layout-2') {
+    body = ctx.header.slice(0, 3).map((l, i) => box(l, 16 + i * 74, 46, 65, 11)).join('') + table(62, 6);
+  } else if (pattern === 'layout-3') {
+    body = box(ctx.header[0], 16, 46, 104, 11) + box(ctx.header[1] || ctx.header[0], 135, 46, 104, 11) + box(ctx.header[2] || ctx.header[0], 16, 61, 223, 11) + table(78, 4);
+  } else if (pattern === 'layout-4') {
+    body = ctx.header.slice(0, 4).map((l, i) => box(l, 16 + (i % 2) * 112, 46 + Math.floor(i / 2) * 13, 96, 11)).join('') + table(76, 3) + box(ctx.footer[0] || 'Remarks', 16, 118, 223, 20) + box('Signature', 150, 146, 89, 16);
+  } else {
+    body = ctx.fields.slice(0, 8).map((l, i) => box(l, 16 + (i % 2) * 112, 46 + Math.floor(i / 2) * 13, 96, 11)).join('') + box(ctx.footer[0] || 'Remarks', 16, 104, 223, 20) + box('Checked By', 16, 132, 100, 15);
+  }
+  preview.innerHTML = `
+    <div class="tpl-title">Layout Preview</div>
+    <div class="tpl-line"></div>
+    ${body}
+    <div class="tpl-footer">Printed by user</div>
+  `;
+}
+
 function buildTemplateElements(template, layout) {
   if (template === 'blank') return [];
   const fields = layout.fields || [];
   const style = layout.defaultStyle || {};
-  const titleMap = {
-    'load-list': 'LOAD LIST',
-    'gr-document': 'GOODS RECEIPT',
-    'freight-forward': 'FREIGHT FORWARD DOCUMENT',
-    'delivery-note': 'DELIVERY NOTE',
-    'pick-list': 'PICK LIST',
-    smart: smartTemplateTitle(layout),
-  };
   const picked = template === 'smart' ? smartTemplateKey(layout) : template;
-  const title = titleMap[template] || 'DOCUMENT';
+  const ctx = templateContext(fields);
+  const title = layout.name || 'DOCUMENT';
   const makeId = p => 'el-' + p + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 5);
   const baseStyle = { ...style, backgroundColor: 'transparent', borderWidth: 0, borderColor: '#000000', borderStyle: 'solid', opacity: 1 };
   const elements = [
-    { id: makeId('title'), type: 'text', x: 8, y: 8, width: 120, height: 10, content: title, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 18, fontWeight: 'bold' } },
-    { id: makeId('user'), type: 'user', x: 150, y: 10, width: 45, height: 8, content: '', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 9, textAlign: 'right' } },
-    { id: makeId('line'), type: 'line', x: 8, y: 22, width: 190, height: 2, lineDirection: 'horizontal', style: { ...baseStyle, borderWidth: 1, borderColor: '#000000' } },
+    { id: makeId('title'), type: 'text', x: 8, y: 7, width: 120, height: 8, content: title, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 15, fontWeight: 'bold' } },
+    { id: makeId('user'), type: 'user', x: 150, y: 8, width: 45, height: 6, content: '', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 8, textAlign: 'right' } },
+    { id: makeId('line'), type: 'line', x: 8, y: 19, width: 190, height: 2, lineDirection: 'horizontal', style: { ...baseStyle, borderWidth: 1, borderColor: '#000000' } },
   ];
-  const headerFields = fields.slice(0, Math.min(4, fields.length));
-  headerFields.forEach((field, index) => {
-    const x = 8 + (index % 2) * 95;
-    const y = 30 + Math.floor(index / 2) * 14;
-    elements.push({ id: makeId('lbl'), type: 'text', x, y, width: 35, height: 7, content: field, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 9, fontWeight: 'bold' } });
-    elements.push({ id: makeId('fld'), type: 'field', x: x + 38, y, width: 50, height: 7, content: '', fieldName: field, imageData: '', style: { ...baseStyle, fontSize: 9 } });
-  });
-  const tableFields = fields.slice(0, Math.min(4, fields.length));
+  const addPair = (field, x, y, w = 86) => {
+    elements.push({ id: makeId('lbl'), type: 'text', x, y, width: 28, height: 5, content: field, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5, fontWeight: 'bold' } });
+    elements.push({ id: makeId('fld'), type: 'field', x: x + 29, y, width: w - 29, height: 5, content: '', fieldName: field, imageData: '', style: { ...baseStyle, fontSize: 7.5 } });
+  };
+  const headerFields = picked === 'layout-5' ? ctx.fields.slice(0, 8) : ctx.header.slice(0, 4);
+  if (picked === 'layout-2') {
+    headerFields.slice(0, 3).forEach((field, index) => addPair(field, 8 + index * 64, 24, 58));
+  } else if (picked === 'layout-3') {
+    headerFields.slice(0, 3).forEach((field, index) => addPair(field, index === 2 ? 8 : 8 + index * 95, index === 2 ? 36 : 24, index === 2 ? 180 : 86));
+  } else if (picked === 'layout-4') {
+    headerFields.forEach((field, index) => addPair(field, 8 + (index % 2) * 95, 24 + Math.floor(index / 2) * 6));
+  } else {
+    headerFields.forEach((field, index) => addPair(field, 8 + (index % 2) * 95, 24 + Math.floor(index / 2) * 6));
+  }
+
+  if (picked === 'layout-5') {
+    elements.push({ id: makeId('remarks'), type: 'rect', x: 8, y: 52, width: 190, height: 20, content: '', fieldName: '', imageData: '', style: { ...baseStyle, borderWidth: 1 } });
+    elements.push({ id: makeId('remarkslbl'), type: 'text', x: 10, y: 54, width: 60, height: 5, content: ctx.footer[0] || 'Remarks', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5, fontWeight: 'bold' } });
+    elements.push({ id: makeId('checked'), type: 'rect', x: 8, y: 78, width: 60, height: 11, content: '', fieldName: '', imageData: '', style: { ...baseStyle, borderWidth: 1 } });
+    elements.push({ id: makeId('checkedlbl'), type: 'text', x: 10, y: 80, width: 50, height: 5, content: 'Checked By', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5 } });
+    return elements;
+  }
+
+  const tableFields = ctx.table.length ? ctx.table : ctx.fields.slice(0, 1);
+  const tableCols = Math.max(1, tableFields.length);
   const cells = tableFields.flatMap((field, col) => [
     { row: 0, col, fieldName: '', content: field, style: { fontWeight: 'bold' } },
     { row: 1, col, fieldName: field, content: '', style: {} },
   ]);
   elements.push({
-    id: makeId('tbl'), type: 'table', x: 8, y: picked === 'pick-list' ? 50 : 62, width: 190, height: 45,
+    id: makeId('tbl'), type: 'table', x: 8, y: picked === 'layout-2' ? 34 : (picked === 'layout-3' ? 46 : 40), width: 190, height: 10,
     content: '', fieldName: '', imageData: '',
-    style: { ...baseStyle, fontSize: 9, borderWidth: 1, borderColor: '#000000', borderStyle: 'solid' },
-    table: { rows: 2, cols: 4, cells, theme: 'plain', borderMode: 'all', colWidths: [1, 1, 1, 1], rowHeights: [1, 1], detailMode: true, colProps: [] },
+    style: { ...baseStyle, fontSize: tableCols > 6 ? 7 : 8, borderWidth: 1, borderColor: '#000000', borderStyle: 'solid' },
+    table: { rows: 2, cols: tableCols, cells, theme: 'plain', borderMode: 'all', colWidths: Array(tableCols).fill(1), rowHeights: [5, 5], detailMode: true, colProps: [] },
   });
+  if (picked === 'layout-4') {
+    elements.push({ id: makeId('remarks'), type: 'rect', x: 8, y: 58, width: 120, height: 16, content: '', fieldName: '', imageData: '', style: { ...baseStyle, borderWidth: 1 } });
+    elements.push({ id: makeId('remarkslbl'), type: 'text', x: 10, y: 60, width: 50, height: 5, content: ctx.footer[0] || 'Remarks', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5 } });
+    elements.push({ id: makeId('sign'), type: 'rect', x: 135, y: 58, width: 55, height: 14, content: '', fieldName: '', imageData: '', style: { ...baseStyle, borderWidth: 1 } });
+    elements.push({ id: makeId('signlbl'), type: 'text', x: 137, y: 60, width: 40, height: 5, content: 'Signature', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5 } });
+  }
   return elements;
 }
 
 function smartTemplateKey(layout) {
   const haystack = `${layout.name || ''} ${(layout.fields || []).join(' ')}`.toLowerCase();
-  if (haystack.includes('pick')) return 'pick-list';
-  if (haystack.includes('delivery')) return 'delivery-note';
-  if (haystack.includes('freight')) return 'freight-forward';
-  if (haystack.includes('gr') || haystack.includes('receipt')) return 'gr-document';
-  if (haystack.includes('load')) return 'load-list';
-  return 'delivery-note';
-}
-
-function smartTemplateTitle(layout) {
-  return {
-    'pick-list': 'PICK LIST',
-    'delivery-note': 'DELIVERY NOTE',
-    'freight-forward': 'FREIGHT FORWARD DOCUMENT',
-    'gr-document': 'GOODS RECEIPT',
-    'load-list': 'LOAD LIST',
-  }[smartTemplateKey(layout)] || 'DOCUMENT';
+  if (haystack.includes('pick')) return 'layout-2';
+  if (haystack.includes('ship') || haystack.includes('carrier') || haystack.includes('bol')) return 'layout-3';
+  if (haystack.includes('delivery') || haystack.includes('dispatch')) return 'layout-4';
+  if (haystack.includes('check') || haystack.includes('load')) return 'layout-5';
+  return 'layout-1';
 }
 
 // ===== Designer View =====
@@ -573,6 +707,10 @@ function initHomeEvents() {
     openAddUserModal();
   });
 
+  document.getElementById('btn-smart-ui')?.addEventListener('click', () => {
+    openSmartUiModal();
+  });
+
   document.getElementById('btn-new-layout').addEventListener('click', () => {
     showSetupView(null);
   });
@@ -612,7 +750,7 @@ function initHomeEvents() {
 }
 
 function initLoginEvents() {
-  ['login-user-id','new-user-id','reset-user-id'].forEach(id => {
+  ['login-user-id','new-user-id','reset-user-id','status-user-id'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', (e) => {
       const pos = e.target.selectionStart;
       e.target.value = e.target.value.toUpperCase();
@@ -654,13 +792,18 @@ function initLoginEvents() {
 function openAddUserModal() {
   document.getElementById('new-user-id').value = '';
   document.getElementById('new-user-role').value = 'user';
+  document.getElementById('new-user-active').value = 'true';
   document.getElementById('new-user-password').value = '';
   document.getElementById('admin-password-confirm').value = '';
   document.getElementById('reset-user-id').value = '';
   document.getElementById('reset-user-password').value = '';
   document.getElementById('reset-admin-password-confirm').value = '';
+  document.getElementById('status-user-id').value = '';
+  document.getElementById('status-user-active').value = 'true';
+  document.getElementById('status-admin-password-confirm').value = '';
   document.getElementById('add-user-error').classList.add('hidden');
   document.getElementById('reset-user-error').classList.add('hidden');
+  document.getElementById('status-user-error').classList.add('hidden');
   setUserModalTab('create');
   document.getElementById('modal-add-user').classList.remove('hidden');
 }
@@ -677,6 +820,7 @@ function setUserModalTab(tabName) {
   document.getElementById('user-tab-' + tabName)?.classList.add('active');
   document.getElementById('btn-add-user-save')?.classList.toggle('hidden', tabName !== 'create');
   document.getElementById('btn-reset-user-password')?.classList.toggle('hidden', tabName !== 'reset');
+  document.getElementById('btn-update-user-status')?.classList.toggle('hidden', tabName !== 'status');
 }
 
 function initAddUserEvents() {
@@ -716,6 +860,9 @@ function initAddUserEvents() {
     btn.textContent = 'Creating...';
     try {
       await window.AuthStore.addUser(current.username, adminPassword, username, password, role);
+      if (document.getElementById('new-user-active').value === 'false') {
+        await window.AuthStore.setUserActive(current.username, adminPassword, username, false);
+      }
       closeAddUserModal();
       showToast(`User "${username}" created.`);
     } catch (err) {
@@ -764,6 +911,170 @@ function initAddUserEvents() {
       btn.textContent = 'Reset Password';
     }
   });
+
+  document.getElementById('btn-update-user-status').addEventListener('click', async () => {
+    const current = getCurrentUser();
+    const username = document.getElementById('status-user-id').value.trim().toUpperCase();
+    const active = document.getElementById('status-user-active').value === 'true';
+    const adminPassword = document.getElementById('status-admin-password-confirm').value;
+    const error = document.getElementById('status-user-error');
+    const btn = document.getElementById('btn-update-user-status');
+
+    error.classList.add('hidden');
+
+    if (!current?.isSuperUser) {
+      error.textContent = 'Only the super user can update user status.';
+      error.classList.remove('hidden');
+      return;
+    }
+    if (!username || !adminPassword) {
+      error.textContent = 'Enter user id and your super user password.';
+      error.classList.remove('hidden');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Updating...';
+    try {
+      await window.AuthStore.setUserActive(current.username, adminPassword, username, active);
+      showToast(`User "${username}" ${active ? 'activated' : 'deactivated'}.`);
+    } catch (err) {
+      error.textContent = err.message || 'Could not update user status.';
+      error.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Update Status';
+    }
+  });
+}
+
+function openSmartUiModal() {
+  const current = getCurrentUser();
+  if (!current?.isSuperUser) {
+    alert('Only the super user can maintain Smart UI.');
+    return;
+  }
+  smartRulesDraft = JSON.parse(JSON.stringify(getSmartRules()));
+  document.getElementById('smart-ui-error')?.classList.add('hidden');
+  setSmartUiTab('header');
+  renderSmartRulesEditor();
+  document.getElementById('modal-smart-ui')?.classList.remove('hidden');
+}
+
+function closeSmartUiModal() {
+  document.getElementById('modal-smart-ui')?.classList.add('hidden');
+}
+
+function setSmartUiTab(tabName) {
+  document.querySelectorAll('.modal-tab[data-smart-tab]').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.smartTab === tabName);
+  });
+  document.querySelectorAll('.smart-tab-content').forEach(content => content.classList.remove('active'));
+  document.getElementById('smart-tab-' + tabName)?.classList.add('active');
+}
+
+function renderSmartRulesEditor() {
+  if (!smartRulesDraft) smartRulesDraft = JSON.parse(JSON.stringify(getSmartRules()));
+  ['header', 'table', 'footer'].forEach(bucket => {
+    const list = document.getElementById(`smart-${bucket}-list`);
+    if (!list) return;
+    const values = smartRulesDraft[bucket] || [];
+    list.innerHTML = values.length
+      ? values.map(value => `
+        <span class="smart-rule-chip">
+          ${escapeHtml(value)}
+            <button type="button" title="Change" data-smart-edit="${bucket}" data-smart-value="${escapeHtml(value)}">Edit</button>
+            <button type="button" data-smart-remove="${bucket}" data-smart-value="${escapeHtml(value)}">&times;</button>
+        </span>
+        `).join('')
+      : '<span class="hint">No keywords added.</span>';
+  });
+}
+
+function addSmartRule(bucket) {
+  const input = document.getElementById(`smart-${bucket}-input`);
+  const value = input?.value.trim().toLowerCase();
+  if (!value) return;
+  smartRulesDraft = smartRulesDraft || JSON.parse(JSON.stringify(getSmartRules()));
+  smartRulesDraft[bucket] = smartRulesDraft[bucket] || [];
+  if (!smartRulesDraft[bucket].includes(value)) smartRulesDraft[bucket].push(value);
+  smartRulesDraft[bucket].sort((a, b) => a.localeCompare(b));
+  input.value = '';
+  renderSmartRulesEditor();
+}
+
+async function saveSmartUiRules() {
+  const current = getCurrentUser();
+  const error = document.getElementById('smart-ui-error');
+  const btn = document.getElementById('btn-smart-ui-save');
+  error?.classList.add('hidden');
+
+  if (!current?.isSuperUser) {
+    if (error) {
+      error.textContent = 'Only the super user can save Smart UI.';
+      error.classList.remove('hidden');
+    }
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  try {
+    const result = await window.LayoutStore?.saveSmartRules?.(smartRulesDraft || getSmartRules());
+    renderTemplatePreview(document.getElementById('layout-template')?.value || 'blank');
+    closeSmartUiModal();
+    showToast(result?.mode === 'local' || result?.ok === false ? 'Smart UI saved locally.' : 'Smart UI saved.');
+  } catch (err) {
+    if (error) {
+      error.textContent = err.message || 'Could not save Smart UI.';
+      error.classList.remove('hidden');
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save Smart UI';
+  }
+}
+
+function initSmartUiEvents() {
+  document.querySelectorAll('.modal-tab[data-smart-tab]').forEach(tab => {
+    tab.addEventListener('click', () => setSmartUiTab(tab.dataset.smartTab));
+  });
+  ['header', 'table', 'footer'].forEach(bucket => {
+    document.getElementById(`btn-smart-${bucket}-add`)?.addEventListener('click', () => addSmartRule(bucket));
+    document.getElementById(`smart-${bucket}-input`)?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addSmartRule(bucket);
+      }
+    });
+  });
+  document.getElementById('modal-smart-ui')?.addEventListener('click', (e) => {
+    if (e.target === document.getElementById('modal-smart-ui')) closeSmartUiModal();
+    const editBtn = e.target.closest('[data-smart-edit]');
+    if (editBtn) {
+      const bucket = editBtn.dataset.smartEdit;
+      const oldValue = editBtn.dataset.smartValue;
+      const nextValue = prompt('Change keyword', oldValue)?.trim().toLowerCase();
+      if (!nextValue) return;
+      smartRulesDraft = smartRulesDraft || JSON.parse(JSON.stringify(getSmartRules()));
+      smartRulesDraft[bucket] = (smartRulesDraft[bucket] || [])
+        .map(item => item === oldValue ? nextValue : item)
+        .filter((item, index, arr) => item && arr.indexOf(item) === index)
+        .sort((a, b) => a.localeCompare(b));
+      renderSmartRulesEditor();
+      return;
+    }
+    const removeBtn = e.target.closest('[data-smart-remove]');
+    if (!removeBtn) return;
+    const bucket = removeBtn.dataset.smartRemove;
+    const value = removeBtn.dataset.smartValue;
+    smartRulesDraft = smartRulesDraft || JSON.parse(JSON.stringify(getSmartRules()));
+    smartRulesDraft[bucket] = (smartRulesDraft[bucket] || []).filter(item => item !== value);
+    renderSmartRulesEditor();
+  });
+  document.getElementById('btn-smart-ui-close')?.addEventListener('click', closeSmartUiModal);
+  document.getElementById('btn-smart-ui-cancel')?.addEventListener('click', closeSmartUiModal);
+  document.getElementById('btn-smart-ui-save')?.addEventListener('click', saveSmartUiRules);
 }
 
 function initSetupEvents() {
@@ -793,6 +1104,14 @@ function initSetupEvents() {
     showSetupStep(1);
   });
 
+  document.getElementById('btn-step2-next').addEventListener('click', () => {
+    showSetupStep(3);
+  });
+
+  document.getElementById('btn-step3-back').addEventListener('click', () => {
+    showSetupStep(2);
+  });
+
   document.getElementById('btn-create-layout').addEventListener('click', () => {
     createNewLayout();
   });
@@ -804,9 +1123,11 @@ function initSetupEvents() {
     if (fields.length > 0) {
       preview.classList.remove('hidden');
       preview.innerHTML = `<label>Parsed Fields:</label><div class="parsed-fields-list">${fields.map(f => `<span>${escapeHtml(f)}</span>`).join('')}</div>`;
+      renderTemplatePreview(document.getElementById('layout-template')?.value || 'blank');
     } else {
       preview.classList.add('hidden');
       preview.innerHTML = '';
+      renderTemplatePreview(document.getElementById('layout-template')?.value || 'blank');
     }
   });
 
@@ -1351,6 +1672,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initRunEvents();
   initRunPreviewModalEvents();
   initAddUserEvents();
+  initSmartUiEvents();
 
   // Check if this tab is opened as a live preview
   const urlParams = new URLSearchParams(window.location.search);

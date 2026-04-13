@@ -9,6 +9,8 @@
 
 const LayoutStore = (() => {
   const LOCAL_KEY = 'printLayouts';
+  const SMART_RULES_KEY = 'printmoreSmartRules';
+  const settingsTableName = 'app_settings';
   const cfg = window.PRINT_LAYOUT_CONFIG || {};
   const tableName = cfg.SUPABASE_LAYOUTS_TABLE || 'layouts';
   const hasSupabaseConfig = Boolean(cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY);
@@ -21,9 +23,16 @@ const LayoutStore = (() => {
     : null;
 
   let cache = [];
+  let smartRulesCache = null;
   let ready = false;
   let lastError = null;
   let currentUser = null;
+
+  const defaultSmartRules = {
+    header: ['customer', 'vendor', 'supplier', 'date', 'doc', 'document', 'invoice', 'order', 'vehicle', 'driver', 'warehouse', 'from', 'to', 'reference', 'ref', 'grn', 'delivery', 'carrier'],
+    table: ['item', 'sku', 'material', 'product', 'description', 'desc', 'qty', 'quantity', 'uom', 'unit', 'weight', 'pallet', 'carton', 'box', 'batch', 'lot', 'serial', 'bin', 'code'],
+    footer: ['prepared', 'checked', 'received', 'approved', 'signature', 'remarks', 'notes', 'total', 'printed', 'user'],
+  };
 
   function readLocal() {
     try {
@@ -33,6 +42,31 @@ const LayoutStore = (() => {
     } catch {
       return [];
     }
+  }
+
+  function normalizeSmartRules(rules) {
+    const source = rules && typeof rules === 'object' ? rules : {};
+    return ['header', 'table', 'footer'].reduce((acc, key) => {
+      const values = Array.isArray(source[key]) ? source[key] : defaultSmartRules[key];
+      acc[key] = [...new Set(values
+        .map(value => String(value || '').trim().toLowerCase())
+        .filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b));
+      return acc;
+    }, {});
+  }
+
+  function readLocalSmartRules() {
+    try {
+      const raw = localStorage.getItem(SMART_RULES_KEY);
+      return normalizeSmartRules(raw ? JSON.parse(raw) : defaultSmartRules);
+    } catch {
+      return normalizeSmartRules(defaultSmartRules);
+    }
+  }
+
+  function writeLocalSmartRules(rules) {
+    localStorage.setItem(SMART_RULES_KEY, JSON.stringify(normalizeSmartRules(rules)));
   }
 
   function writeLocal(layouts) {
@@ -83,6 +117,61 @@ const LayoutStore = (() => {
     }
 
     return cache;
+  }
+
+  async function loadSmartRules() {
+    smartRulesCache = readLocalSmartRules();
+    if (!client) return smartRulesCache;
+
+    try {
+      const { data, error } = await client
+        .from(settingsTableName)
+        .select('value')
+        .eq('key', SMART_RULES_KEY)
+        .maybeSingle();
+
+      if (error) throw error;
+      if (data?.value) {
+        smartRulesCache = normalizeSmartRules(data.value);
+        writeLocalSmartRules(smartRulesCache);
+      }
+      lastError = null;
+    } catch (err) {
+      console.error('Supabase smart rules load failed; using local rules.', err);
+      lastError = err;
+    }
+
+    return smartRulesCache;
+  }
+
+  async function saveSmartRules(rules) {
+    smartRulesCache = normalizeSmartRules(rules);
+    writeLocalSmartRules(smartRulesCache);
+
+    if (!client) return { ok: true, mode: 'local' };
+
+    try {
+      const { error } = await client
+        .from(settingsTableName)
+        .upsert({
+          key: SMART_RULES_KEY,
+          value: smartRulesCache,
+          updated_at: new Date().toISOString(),
+        });
+
+      if (error) throw error;
+      lastError = null;
+      return { ok: true, mode: 'supabase' };
+    } catch (err) {
+      console.error('Supabase smart rules save failed; kept local copy.', err);
+      lastError = err;
+      return { ok: false, mode: 'local', error: err };
+    }
+  }
+
+  function getSmartRules() {
+    if (!smartRulesCache) smartRulesCache = readLocalSmartRules();
+    return normalizeSmartRules(smartRulesCache);
   }
 
   function getAll() {
@@ -172,6 +261,9 @@ const LayoutStore = (() => {
     save,
     remove,
     status,
+    getSmartRules,
+    loadSmartRules,
+    saveSmartRules,
     onExternalChange: (handler) => {
       if (!channel) return;
       channel.addEventListener('message', event => handler(event.data));

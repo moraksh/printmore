@@ -325,7 +325,7 @@ class Designer {
         case 'user':     this._buildUserEl(domEl, el); break;
       case 'image':
       case 'logo':     this._buildImageEl(domEl, el); break;
-      case 'rect':     this._buildRectEl(domEl, el); break;
+        case 'rect':     this._buildRectEl(domEl, el); break;
       case 'line':     this._buildLineEl(domEl, el); break;
       case 'table':    this._buildTableEl(domEl, el); break;
       case 'datetime': this._buildDateTimeEl(domEl, el); break;
@@ -682,11 +682,7 @@ class Designer {
         cell.addEventListener('click', (e) => {
           e.stopPropagation();
           if (this.selectedId === el.id) {
-            if (r === 0) {
-              this._selectTableColumn(el.id, c);
-            } else {
-              this._selectTableCell(el.id, r, c);
-            }
+            this._selectTableCell(el.id, r, c);
           }
         });
 
@@ -1231,7 +1227,10 @@ class Designer {
     // Deselect
     this.deselectAll();
 
-    if (this.activeTool === 'select') return;
+    if (this.activeTool === 'select') {
+      e.preventDefault();
+      return;
+    }
 
     // Start drawing a new element
     const rect = this.pageCanvas.getBoundingClientRect();
@@ -1386,7 +1385,7 @@ class Designer {
       case 'user':     return { width: 45, height: 10 };
       case 'image':
       case 'logo':     return { width: 40, height: 30 };
-      case 'rect':     return { width: 60, height: 30 };
+        case 'rect':     return { width: 60, height: 30 };
       case 'line':     return { width: 80, height: 4 };
       case 'table':    return { width: 140, height: 28 };
       case 'datetime': return { width: 50, height: 8 };
@@ -1399,6 +1398,12 @@ class Designer {
   // ===== Selection =====
   selectElement(id) {
     this.selectedId = id;
+    if (!id) {
+      this.selectedCell = null;
+      this.pageCanvas.querySelectorAll('.el-table-cell').forEach(cell => {
+        cell.style.outline = 'none';
+      });
+    }
     this.pageCanvas.querySelectorAll('.canvas-element').forEach(el => {
       el.classList.remove('selected');
     });
@@ -1837,7 +1842,7 @@ class Designer {
 
     const style = el.style || {};
     // Typography
-    const hasText = ['text','field','user','table','datetime','pagenum'].includes(el.type);
+      const hasText = ['text','field','user','table','datetime','pagenum'].includes(el.type);
     document.getElementById('prop-group-typography').classList.toggle('hidden', !hasText);
     if (hasText) {
       document.getElementById('prop-font-family').value = style.fontFamily || 'Arial';
@@ -2616,8 +2621,8 @@ class Designer {
         this._applyTextStyle(domEl, style);
         domEl.style.color = style.color || '#3366cc';
         break;
-      case 'rect':
-        domEl.style.backgroundColor = style.backgroundColor || 'transparent';
+        case 'rect':
+          domEl.style.backgroundColor = style.backgroundColor || 'transparent';
         domEl.style.border = style.borderWidth > 0
           ? `${style.borderWidth}px ${style.borderStyle || 'solid'} ${style.borderColor || '#000000'}`
           : 'none';

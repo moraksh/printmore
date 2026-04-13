@@ -5,6 +5,7 @@ create table if not exists public.printmore_users (
   username text not null unique,
   password text not null,
   role text not null default 'user' check (role in ('user', 'designer', 'super')),
+  active boolean not null default true,
   is_super_user boolean not null default false,
   created_at timestamptz not null default now()
 );
@@ -16,6 +17,9 @@ add column if not exists password text;
 
 alter table public.printmore_users
 add column if not exists role text not null default 'user';
+
+alter table public.printmore_users
+add column if not exists active boolean not null default true;
 
 update public.printmore_users
 set password = 'More400'
@@ -34,11 +38,12 @@ alter column password set not null;
 alter table public.printmore_users
 drop column if exists password_hash;
 
-insert into public.printmore_users (username, password, role, is_super_user)
-values ('MORAKSH', 'More400', 'super', true)
+insert into public.printmore_users (username, password, role, active, is_super_user)
+values ('MORAKSH', 'More400', 'super', true, true)
 on conflict (username) do update
 set password = excluded.password,
     role = 'super',
+    active = true,
     is_super_user = true;
 
 create table if not exists public.layouts (
@@ -99,10 +104,35 @@ using (true);
 create index if not exists layouts_user_updated_at_idx
 on public.layouts (user_id, updated_at desc);
 
+create table if not exists public.app_settings (
+  key text primary key,
+  value jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.app_settings enable row level security;
+
+drop policy if exists "Allow app settings reads" on public.app_settings;
+drop policy if exists "Allow app settings writes" on public.app_settings;
+
+create policy "Allow app settings reads"
+on public.app_settings
+for select
+to anon
+using (true);
+
+create policy "Allow app settings writes"
+on public.app_settings
+for all
+to anon
+using (true)
+with check (true);
+
 drop function if exists public.authenticate_printmore_user(text, text);
 drop function if exists public.create_printmore_user(text, text, text, text);
 drop function if exists public.create_printmore_user(text, text, text, text, text);
 drop function if exists public.reset_printmore_user_password(text, text, text, text);
+drop function if exists public.set_printmore_user_active(text, text, text, boolean);
 
 create or replace function public.authenticate_printmore_user(
   p_username text,
@@ -117,6 +147,7 @@ as $$
   from public.printmore_users u
   where lower(u.username) = lower(trim(p_username))
     and u.password = p_password
+    and u.active = true
   limit 1;
 $$;
 
@@ -152,8 +183,8 @@ begin
     raise exception 'User id and password are required.';
   end if;
 
-  insert into public.printmore_users (username, password, role, is_super_user)
-  values (upper(trim(p_username)), p_password, coalesce(nullif(p_role, ''), 'user'), coalesce(nullif(p_role, ''), 'user') = 'super')
+  insert into public.printmore_users (username, password, role, active, is_super_user)
+  values (upper(trim(p_username)), p_password, coalesce(nullif(p_role, ''), 'user'), true, coalesce(nullif(p_role, ''), 'user') = 'super')
   returning * into v_user;
 
   return query select v_user.id, upper(v_user.username), v_user.role, v_user.is_super_user;
@@ -204,6 +235,47 @@ begin
 end;
 $$;
 
+create or replace function public.set_printmore_user_active(
+  p_admin_username text,
+  p_admin_password text,
+  p_username text,
+  p_active boolean
+)
+returns table(id uuid, username text, role text, is_super_user boolean)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_admin public.printmore_users;
+  v_user public.printmore_users;
+begin
+  select *
+  into v_admin
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_admin_username))
+    and u.password = p_admin_password
+    and u.is_super_user = true
+  limit 1;
+
+  if v_admin.id is null then
+    raise exception 'Invalid super user password.';
+  end if;
+
+  update public.printmore_users u
+  set active = p_active
+  where lower(u.username) = lower(trim(p_username))
+  returning * into v_user;
+
+  if v_user.id is null then
+    raise exception 'User id not found.';
+  end if;
+
+  return query select v_user.id, upper(v_user.username), v_user.role, v_user.is_super_user;
+end;
+$$;
+
 grant execute on function public.authenticate_printmore_user(text, text) to anon;
 grant execute on function public.create_printmore_user(text, text, text, text, text) to anon;
 grant execute on function public.reset_printmore_user_password(text, text, text, text) to anon;
+grant execute on function public.set_printmore_user_active(text, text, text, boolean) to anon;

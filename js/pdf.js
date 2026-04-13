@@ -5,6 +5,8 @@
 'use strict';
 
 const PDF_MM_TO_PX = 3.7795; // same scale as designer for rendering
+const PDF_HD_CANVAS_SCALE = 3;
+const PDF_LARGE_JOB_CANVAS_SCALE = 2;
 
 /**
  * Format a date/time string using a format pattern.
@@ -53,6 +55,22 @@ function _getElementZone(el, page, pageHeightMm) {
   return 'body';
 }
 
+function _isHeaderActiveOnPage(page, pageIndex) {
+  const pages = page.headerPages || 'all';
+  return !!page.headerEnabled && (pages === 'all' || (pages === 'first' && pageIndex === 0));
+}
+
+function _isFooterActiveOnPage(page, pageIndex, totalPages) {
+  const pages = page.footerPages || 'all';
+  return !!page.footerEnabled && (pages === 'all' || (pages === 'last' && pageIndex === totalPages - 1));
+}
+
+function _detailStartYForPage(detailEl, page, pageIndex) {
+  if (pageIndex === 0) return detailEl.y;
+  if (_isHeaderActiveOnPage(page, pageIndex)) return page.headerHeight || 0;
+  return page.marginTop ?? 15;
+}
+
 /**
  * Render all detail rows in a hidden container, measure each row's actual
  * DOM height, and return page slices with exactly the rows that fit.
@@ -61,8 +79,8 @@ function _getElementZone(el, page, pageHeightMm) {
  */
 function _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm) {
   const mb  = page.marginBottom ?? 15;
-  const hH = page.headerEnabled ? (page.headerHeight || 0) : 0; // mm
   const fH = page.footerEnabled ? (page.footerHeight || 0) : 0; // mm
+  const footerPages = page.footerPages || 'all';
 
   // Render ALL rows into a hidden off-screen container to measure heights
   const tmp = document.createElement('div');
@@ -79,19 +97,22 @@ function _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm) {
 
   const headerRowPx = rowHeightsPx[0] || 20; // column-header bar height
 
-  // Available px for DATA rows (below column-header) on each page type.
-  // el.y coords are physical-page mm from page top (same as designer canvas).
-  // Usable bottom = pageHeight - marginBottom - footerHeight (physical page coords).
-  // Page 1: table starts at detailEl.y (physical), footer + margin at bottom
-  const page1AvailPx = (hMm - mb - fH - detailEl.y) * scale - headerRowPx;
-  // Pages 2+: table repositioned to y=hH (just below header zone), same bottom
-  const pageNAvailPx = (hMm - mb - hH - fH) * scale - headerRowPx;
+  const availablePx = (pageIndex, totalPagesForFooter) => {
+    const footerActive = page.footerEnabled && (
+      footerPages === 'all' ||
+      (footerPages === 'last' && totalPagesForFooter !== null && pageIndex === totalPagesForFooter - 1)
+    );
+    const startY = _detailStartYForPage(detailEl, page, pageIndex);
+    const bottomY = hMm - mb - (footerActive ? fH : 0);
+    return Math.max((bottomY - startY) * scale - headerRowPx, 20);
+  };
 
   const slices = [];
   let ri    = 0; // current index into detailRows
-  let avail = Math.max(page1AvailPx, 20); // px available for data rows this page
+  let pageIndex = 0;
 
   while (ri < detailRows.length) {
+    const avail = availablePx(pageIndex, null);
     let usedPx  = 0;
     const batch = [];
 
@@ -109,7 +130,27 @@ function _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm) {
     }
 
     slices.push(batch);
-    avail = Math.max(pageNAvailPx, 20); // subsequent pages
+    pageIndex++;
+  }
+
+  if (page.footerEnabled && footerPages === 'last' && slices.length > 0) {
+    let lastIndex = slices.length - 1;
+    let lastRows = slices[lastIndex];
+    const lastStartIndex = slices.slice(0, lastIndex).reduce((sum, pageRows) => sum + pageRows.length, 0);
+    let lastUsed = lastRows.reduce((sum, _row, rowIndex) => {
+      const originalIndex = lastStartIndex + rowIndex;
+      return sum + (rowHeightsPx[originalIndex + 1] || headerRowPx);
+    }, 0);
+    const lastAvail = availablePx(lastIndex, slices.length);
+
+    if (lastUsed > lastAvail && lastRows.length > 1) {
+      const moved = [];
+      if (lastRows.length > 1) {
+        const row = lastRows.pop();
+        moved.unshift(row);
+      }
+      if (moved.length) slices.push(moved);
+    }
   }
 
   return slices.length ? slices : [[]];
@@ -467,8 +508,8 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
       const colAlign = cp.textAlign || style.textAlign || 'left';
       const padLeft = cp.paddingLeft !== undefined ? cp.paddingLeft + 'px' : '5px';
       const padRight = cp.paddingRight !== undefined ? cp.paddingRight + 'px' : '5px';
-      td.style.paddingTop = '3px';
-      td.style.paddingBottom = '3px';
+      td.style.paddingTop = '1px';
+      td.style.paddingBottom = '1px';
       td.style.paddingLeft = padLeft;
       td.style.paddingRight = padRight;
       td.style.overflow = 'hidden';
@@ -501,12 +542,16 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
 
       // Find cell definition from designer
       const cellDef = cells.find(cl => cl.row === r && cl.col === c);
-      if (cellDef?.style?.fontFamily) td.style.fontFamily = cellDef.style.fontFamily;
-      if (cellDef?.style?.fontSize) td.style.fontSize = cellDef.style.fontSize + 'pt';
-      if (cellDef?.style?.fontWeight) td.style.fontWeight = cellDef.style.fontWeight;
-      if (cellDef?.style?.fontStyle) td.style.fontStyle = cellDef.style.fontStyle;
-      if (cellDef?.style?.textDecoration) td.style.textDecoration = cellDef.style.textDecoration;
-      if (cellDef?.style?.color) td.style.color = cellDef.style.color;
+      const repeatingCellDef = isDetail && !isHeaderRow
+        ? (cells.find(cl => cl.row === 1 && cl.col === c) || cellDef)
+        : cellDef;
+      const effectiveStyle = repeatingCellDef?.style || {};
+      if (effectiveStyle.fontFamily) td.style.fontFamily = effectiveStyle.fontFamily;
+      if (effectiveStyle.fontSize) td.style.fontSize = effectiveStyle.fontSize + 'pt';
+      if (effectiveStyle.fontWeight) td.style.fontWeight = effectiveStyle.fontWeight;
+      if (effectiveStyle.fontStyle) td.style.fontStyle = effectiveStyle.fontStyle;
+      if (effectiveStyle.textDecoration) td.style.textDecoration = effectiveStyle.textDecoration;
+      if (effectiveStyle.color) td.style.color = effectiveStyle.color;
 
       if (isHeaderRow) {
         // Header row: show cell content or field name as label
@@ -629,7 +674,10 @@ async function generatePDF(layout, fieldValues, detailRows) {
   }
 
   const totalPages = pageSlices.length;
-  const canvasScale = totalPages > 2 || (detailRows && detailRows.length > 25) ? 1 : 2;
+  const detailCount = detailRows?.length || 0;
+  const canvasScale = (totalPages > 12 || detailCount > 250)
+    ? PDF_LARGE_JOB_CANVAS_SCALE
+    : PDF_HD_CANVAS_SCALE;
 
   // ── Render each page ────────────────────────────────────────────────────
   const renderArea = document.getElementById('pdf-render-area');
@@ -637,7 +685,7 @@ async function generatePDF(layout, fieldValues, detailRows) {
 
   const { jsPDF } = window.jspdf;
   const orientation = page.orientation === 'landscape' ? 'l' : 'p';
-  const doc = new jsPDF({ orientation, unit: 'mm', format: [wMm, hMm], compress: true });
+  const doc = new jsPDF({ orientation, unit: 'mm', format: [wMm, hMm], compress: false });
 
   for (let pi = 0; pi < totalPages; pi++) {
     const isFirst = pi === 0;
@@ -663,9 +711,9 @@ async function generatePDF(layout, fieldValues, detailRows) {
     // Detail table
     let detailOverride = null;
     if (detailEl) {
-      if (hasData && slice !== null) {
-        // Pages 2+: reposition table to just below header zone
-        const repositioned = isFirst ? detailEl : { ...detailEl, y: hH };
+        if (hasData && slice !== null) {
+          const nextY = _detailStartYForPage(detailEl, page, pi);
+          const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
         pageEls.push(repositioned);
         detailOverride = { el: repositioned, rows: slice };
       } else if (!hasData) {
@@ -706,10 +754,10 @@ async function generatePDF(layout, fieldValues, detailRows) {
 
     const imgData = canvas.toDataURL('image/png');
     if (pi === 0) {
-      doc.addImage(imgData, 'PNG', 0, 0, wMm, hMm);
+      doc.addImage(imgData, 'PNG', 0, 0, wMm, hMm, undefined, 'NONE');
     } else {
       doc.addPage([wMm, hMm], orientation);
-      doc.addImage(imgData, 'PNG', 0, 0, wMm, hMm);
+      doc.addImage(imgData, 'PNG', 0, 0, wMm, hMm, undefined, 'NONE');
     }
   }
 
@@ -779,8 +827,9 @@ async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl)
 
     let detailOverride = null;
     if (detailEl) {
-      if (hasData && slice !== null) {
-        const repositioned = isFirst ? detailEl : { ...detailEl, y: hH };
+        if (hasData && slice !== null) {
+          const nextY = _detailStartYForPage(detailEl, page, pi);
+          const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
         pageEls.push(repositioned);
         detailOverride = { el: repositioned, rows: slice };
       } else if (!hasData) {
@@ -798,7 +847,7 @@ async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl)
     const pageDOM = _buildPageDOM(page, wMm, hMm, pageEls, fieldValues, scale, detailOverride, pi + 1, totalPages);
 
     // Zone guide overlays — match designer appearance so positions look identical
-    if (hEnabled) {
+      if (_isHeaderActiveOnPage(page, pi)) {
       const hOv = document.createElement('div');
       hOv.style.cssText = `position:absolute;left:0;width:100%;top:0;height:${hH * scale}px;background:rgba(59,130,246,0.07);border-bottom:2px dashed rgba(59,130,246,0.5);box-sizing:border-box;pointer-events:none;z-index:10;`;
       const hLbl = document.createElement('span');
@@ -807,7 +856,7 @@ async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl)
       hOv.appendChild(hLbl);
       pageDOM.appendChild(hOv);
     }
-    if (fEnabled) {
+      if (_isFooterActiveOnPage(page, pi, totalPages)) {
       const fTop = (hMm - fH) * scale;
       const fOv = document.createElement('div');
       fOv.style.cssText = `position:absolute;left:0;width:100%;top:${fTop}px;height:${fH * scale}px;background:rgba(249,115,22,0.07);border-top:2px dashed rgba(249,115,22,0.5);box-sizing:border-box;pointer-events:none;z-index:10;`;
