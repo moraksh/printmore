@@ -1064,6 +1064,25 @@ textarea { resize: vertical; }
   font-weight: 800;
   text-transform: uppercase;
 }
+.modal-tabs {
+  display: flex;
+  gap: 6px;
+}
+.modal-tab {
+  background: var(--bg-active);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 7px 12px;
+}
+.modal-tab.active {
+  background: var(--accent-light);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.user-tab-content { display: none; flex-direction: column; gap: 16px; }
+.user-tab-content.active { display: flex; }
 .modal-divider {
   background: var(--border);
   height: 1px;

@@ -604,15 +604,19 @@ class Designer {
         if (cp.paddingRight !== undefined) cell.style.paddingRight = cp.paddingRight + 'px';
 
         const cellStyle = cellData?.style || {};
+        if (cellStyle.fontFamily) cell.style.fontFamily = cellStyle.fontFamily;
+        if (cellStyle.fontSize) cell.style.fontSize = cellStyle.fontSize + 'pt';
+        if (cellStyle.fontStyle) cell.style.fontStyle = cellStyle.fontStyle;
+        if (cellStyle.textDecoration) cell.style.textDecoration = cellStyle.textDecoration;
 
         // Row background
         if (r === 0) {
           cell.style.backgroundColor = headerBg;
-          cell.style.color = headerColor;
+          cell.style.color = cellStyle.color || headerColor;
           cell.style.fontWeight = cellStyle.fontWeight || '600';
         } else {
           cell.style.backgroundColor = (r % 2 === 0) ? altRowBg : rowBg;
-          cell.style.color = style.color || '#000000';
+          cell.style.color = cellStyle.color || style.color || '#000000';
           cell.style.fontWeight = cellStyle.fontWeight || style.fontWeight || 'normal';
         }
 
@@ -912,6 +916,15 @@ class Designer {
   // ===== Table Cell Selection =====
   _selectTableCell(elementId, row, col) {
     this.selectedCell = { elementId, row, col };
+    const el = this._findElement(elementId);
+    const cellData = el?.table?.cells?.find(c => c.row === row && c.col === col);
+    const cellStyle = cellData?.style || {};
+    if (cellStyle.fontFamily) document.getElementById('prop-font-family').value = cellStyle.fontFamily;
+    if (cellStyle.fontSize) document.getElementById('prop-font-size').value = cellStyle.fontSize;
+    if (cellStyle.color) document.getElementById('prop-color').value = cellStyle.color;
+    this._setStyleBtnActive('prop-bold', cellStyle.fontWeight === 'bold');
+    this._setStyleBtnActive('prop-italic', cellStyle.fontStyle === 'italic');
+    this._setStyleBtnActive('prop-underline', cellStyle.textDecoration === 'underline');
 
     // Hide column properties panel when a non-header cell is clicked
     document.getElementById('prop-group-column')?.classList.add('hidden');
@@ -2123,6 +2136,12 @@ class Designer {
     this._saveLayoutElements();
   }
 
+  _applySelectedCellStyle(stylePatch) {
+    if (!this.selectedCell || this.selectedCell.isColumn) return false;
+    this._updateTableCellStyle(this.selectedCell.elementId, this.selectedCell.row, this.selectedCell.col, stylePatch);
+    return true;
+  }
+
   // ===== Properties Events =====
   _initPropertiesEvents() {
     const onPosSize = () => {
@@ -2152,6 +2171,7 @@ class Designer {
       const ff = document.getElementById('prop-font-family').value;
       const fs = parseFloat(document.getElementById('prop-font-size').value) || 12;
       const fc = document.getElementById('prop-color').value;
+      if (this._applySelectedCellStyle({ fontFamily: ff, fontSize: fs, color: fc })) return;
       // Update default style for future elements
       this.defaultStyle.fontFamily = ff;
       this.defaultStyle.fontSize = fs;
@@ -2165,6 +2185,14 @@ class Designer {
     document.getElementById('prop-color').addEventListener('input', fontChange);
 
     document.getElementById('prop-bold').addEventListener('click', () => {
+      if (this.selectedCell && !this.selectedCell.isColumn) {
+        const el = this._findElement(this.selectedCell.elementId);
+        const cell = el?.table?.cells?.find(c => c.row === this.selectedCell.row && c.col === this.selectedCell.col);
+        const next = cell?.style?.fontWeight === 'bold' ? 'normal' : 'bold';
+        this._applySelectedCellStyle({ fontWeight: next });
+        this._setStyleBtnActive('prop-bold', next === 'bold');
+        return;
+      }
       const newW = (this.defaultStyle.fontWeight === 'bold') ? 'normal' : 'bold';
       this.defaultStyle.fontWeight = newW;
       if (this.selectedId) {
@@ -2173,6 +2201,14 @@ class Designer {
       this._setStyleBtnActive('prop-bold', newW === 'bold');
     });
     document.getElementById('prop-italic').addEventListener('click', () => {
+      if (this.selectedCell && !this.selectedCell.isColumn) {
+        const el = this._findElement(this.selectedCell.elementId);
+        const cell = el?.table?.cells?.find(c => c.row === this.selectedCell.row && c.col === this.selectedCell.col);
+        const next = cell?.style?.fontStyle === 'italic' ? 'normal' : 'italic';
+        this._applySelectedCellStyle({ fontStyle: next });
+        this._setStyleBtnActive('prop-italic', next === 'italic');
+        return;
+      }
       const newS = (this.defaultStyle.fontStyle === 'italic') ? 'normal' : 'italic';
       this.defaultStyle.fontStyle = newS;
       if (this.selectedId) {
@@ -2181,6 +2217,14 @@ class Designer {
       this._setStyleBtnActive('prop-italic', newS === 'italic');
     });
     document.getElementById('prop-underline').addEventListener('click', () => {
+      if (this.selectedCell && !this.selectedCell.isColumn) {
+        const el = this._findElement(this.selectedCell.elementId);
+        const cell = el?.table?.cells?.find(c => c.row === this.selectedCell.row && c.col === this.selectedCell.col);
+        const next = cell?.style?.textDecoration === 'underline' ? 'none' : 'underline';
+        this._applySelectedCellStyle({ textDecoration: next });
+        this._setStyleBtnActive('prop-underline', next === 'underline');
+        return;
+      }
       const newD = (this.defaultStyle.textDecoration === 'underline') ? 'none' : 'underline';
       this.defaultStyle.textDecoration = newD;
       if (this.selectedId) {

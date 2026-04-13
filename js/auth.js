@@ -20,7 +20,8 @@ const AuthStore = (() => {
     if (!user) return null;
     return {
       id: user.id,
-      username: user.username,
+      username: String(user.username || '').toUpperCase(),
+      role: user.role || (user.is_super_user || user.isSuperUser ? 'super' : 'user'),
       isSuperUser: Boolean(user.is_super_user ?? user.isSuperUser),
     };
   }
@@ -59,7 +60,7 @@ const AuthStore = (() => {
     return normalizeUser(user);
   }
 
-  async function addUser(adminUsername, adminPassword, username, password) {
+  async function addUser(adminUsername, adminPassword, username, password, role = 'user') {
     if (!client) throw new Error('Supabase is not configured.');
 
     const { data, error } = await client.rpc('create_printmore_user', {
@@ -67,6 +68,7 @@ const AuthStore = (() => {
       p_admin_password: adminPassword,
       p_username: username,
       p_password: password,
+      p_role: role,
     });
 
     if (error) throw error;

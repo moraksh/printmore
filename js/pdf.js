@@ -501,7 +501,12 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
 
       // Find cell definition from designer
       const cellDef = cells.find(cl => cl.row === r && cl.col === c);
+      if (cellDef?.style?.fontFamily) td.style.fontFamily = cellDef.style.fontFamily;
+      if (cellDef?.style?.fontSize) td.style.fontSize = cellDef.style.fontSize + 'pt';
       if (cellDef?.style?.fontWeight) td.style.fontWeight = cellDef.style.fontWeight;
+      if (cellDef?.style?.fontStyle) td.style.fontStyle = cellDef.style.fontStyle;
+      if (cellDef?.style?.textDecoration) td.style.textDecoration = cellDef.style.textDecoration;
+      if (cellDef?.style?.color) td.style.color = cellDef.style.color;
 
       if (isHeaderRow) {
         // Header row: show cell content or field name as label
@@ -624,6 +629,7 @@ async function generatePDF(layout, fieldValues, detailRows) {
   }
 
   const totalPages = pageSlices.length;
+  const canvasScale = totalPages > 2 || (detailRows && detailRows.length > 25) ? 1 : 2;
 
   // ── Render each page ────────────────────────────────────────────────────
   const renderArea = document.getElementById('pdf-render-area');
@@ -685,7 +691,7 @@ async function generatePDF(layout, fieldValues, detailRows) {
     let canvas;
     try {
       canvas = await html2canvas(pageDOM, {
-        scale: 2,
+        scale: canvasScale,
         useCORS: true,
         allowTaint: true,
         backgroundColor: '#ffffff',

@@ -32,9 +32,11 @@ function updateUserChrome() {
   const user = getCurrentUser();
   const label = document.getElementById('current-user-label');
   const addUserBtn = document.getElementById('btn-add-user');
+  const canDesign = user?.role === 'designer' || user?.role === 'super';
 
   if (label) label.textContent = user ? `User: ${user.username}` : '';
   if (addUserBtn) addUserBtn.classList.toggle('hidden', !user?.isSuperUser);
+  document.getElementById('btn-new-layout')?.classList.toggle('hidden', !canDesign);
 }
 
 function showLoginView(message) {
@@ -215,6 +217,8 @@ function renderHomeView() {
   const grid = document.getElementById('layouts-grid');
   const noMsg = document.getElementById('no-layouts-msg');
   const layouts = loadLayouts();
+  const user = getCurrentUser();
+  const canDesign = user?.role === 'designer' || user?.role === 'super';
 
   grid.innerHTML = '';
   if (layouts.length === 0) {
@@ -238,10 +242,10 @@ function renderHomeView() {
         <span>Created ${formatDate(layout.createdAt)}</span>
       </div>
       <div class="layout-card-actions">
-        <button class="btn btn-primary btn-sm" data-action="edit" data-id="${layout.id}">Edit</button>
+        ${canDesign ? `<button class="btn btn-primary btn-sm" data-action="edit" data-id="${layout.id}">Edit</button>` : ''}
         <button class="btn btn-secondary btn-sm" data-action="run" data-id="${layout.id}">Run</button>
         <button class="btn btn-ghost btn-sm" data-action="export" data-id="${layout.id}" title="Download as JSON">&#8595; Export</button>
-        <button class="btn btn-danger btn-sm" data-action="delete" data-id="${layout.id}">Delete</button>
+        ${canDesign ? `<button class="btn btn-danger btn-sm" data-action="delete" data-id="${layout.id}">Delete</button>` : ''}
       </div>
     `;
     grid.appendChild(card);
@@ -273,6 +277,7 @@ function showSetupView(prefill) {
   document.getElementById('default-font-color').value = prefill?.defaultStyle?.color || '#000000';
   document.getElementById('field-names-input').value = (prefill?.fields || []).join('\t');
   document.getElementById('text-names-input').value = (prefill?.texts || []).join('\t');
+  document.getElementById('layout-template').value = 'blank';
   const ftList = document.getElementById('field-type-list');
   if (ftList) ftList.innerHTML = '';
   document.getElementById('parsed-fields-preview').classList.add('hidden');
@@ -320,13 +325,82 @@ function createNewLayout() {
     defaultStyle,
     elements: [],
   };
+  layout.elements = buildTemplateElements(document.getElementById('layout-template').value, layout);
 
   saveLayout(layout);
   openDesigner(layout.id);
 }
 
+function buildTemplateElements(template, layout) {
+  if (template === 'blank') return [];
+  const fields = layout.fields || [];
+  const style = layout.defaultStyle || {};
+  const titleMap = {
+    'load-list': 'LOAD LIST',
+    'gr-document': 'GOODS RECEIPT',
+    'freight-forward': 'FREIGHT FORWARD DOCUMENT',
+    'delivery-note': 'DELIVERY NOTE',
+    'pick-list': 'PICK LIST',
+    smart: smartTemplateTitle(layout),
+  };
+  const picked = template === 'smart' ? smartTemplateKey(layout) : template;
+  const title = titleMap[template] || 'DOCUMENT';
+  const makeId = p => 'el-' + p + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 5);
+  const baseStyle = { ...style, backgroundColor: 'transparent', borderWidth: 0, borderColor: '#000000', borderStyle: 'solid', opacity: 1 };
+  const elements = [
+    { id: makeId('title'), type: 'text', x: 8, y: 8, width: 120, height: 10, content: title, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 18, fontWeight: 'bold' } },
+    { id: makeId('user'), type: 'user', x: 150, y: 10, width: 45, height: 8, content: '', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 9, textAlign: 'right' } },
+    { id: makeId('line'), type: 'line', x: 8, y: 22, width: 190, height: 2, lineDirection: 'horizontal', style: { ...baseStyle, borderWidth: 1, borderColor: '#000000' } },
+  ];
+  const headerFields = fields.slice(0, Math.min(4, fields.length));
+  headerFields.forEach((field, index) => {
+    const x = 8 + (index % 2) * 95;
+    const y = 30 + Math.floor(index / 2) * 14;
+    elements.push({ id: makeId('lbl'), type: 'text', x, y, width: 35, height: 7, content: field, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 9, fontWeight: 'bold' } });
+    elements.push({ id: makeId('fld'), type: 'field', x: x + 38, y, width: 50, height: 7, content: '', fieldName: field, imageData: '', style: { ...baseStyle, fontSize: 9 } });
+  });
+  const tableFields = fields.slice(0, Math.min(4, fields.length));
+  const cells = tableFields.flatMap((field, col) => [
+    { row: 0, col, fieldName: '', content: field, style: { fontWeight: 'bold' } },
+    { row: 1, col, fieldName: field, content: '', style: {} },
+  ]);
+  elements.push({
+    id: makeId('tbl'), type: 'table', x: 8, y: picked === 'pick-list' ? 50 : 62, width: 190, height: 45,
+    content: '', fieldName: '', imageData: '',
+    style: { ...baseStyle, fontSize: 9, borderWidth: 1, borderColor: '#000000', borderStyle: 'solid' },
+    table: { rows: 2, cols: 4, cells, theme: 'plain', borderMode: 'all', colWidths: [1, 1, 1, 1], rowHeights: [1, 1], detailMode: true, colProps: [] },
+  });
+  return elements;
+}
+
+function smartTemplateKey(layout) {
+  const haystack = `${layout.name || ''} ${(layout.fields || []).join(' ')}`.toLowerCase();
+  if (haystack.includes('pick')) return 'pick-list';
+  if (haystack.includes('delivery')) return 'delivery-note';
+  if (haystack.includes('freight')) return 'freight-forward';
+  if (haystack.includes('gr') || haystack.includes('receipt')) return 'gr-document';
+  if (haystack.includes('load')) return 'load-list';
+  return 'delivery-note';
+}
+
+function smartTemplateTitle(layout) {
+  return {
+    'pick-list': 'PICK LIST',
+    'delivery-note': 'DELIVERY NOTE',
+    'freight-forward': 'FREIGHT FORWARD DOCUMENT',
+    'gr-document': 'GOODS RECEIPT',
+    'load-list': 'LOAD LIST',
+  }[smartTemplateKey(layout)] || 'DOCUMENT';
+}
+
 // ===== Designer View =====
 function openDesigner(layoutId) {
+  const user = getCurrentUser();
+  if (!(user?.role === 'designer' || user?.role === 'super')) {
+    alert('You do not have access to edit layouts.');
+    renderHomeView();
+    return;
+  }
   currentLayoutId = layoutId;
   showView('designer');
 
@@ -399,6 +473,12 @@ function openRunView(layoutId) {
 
 function renderManualRows(layout) {
   const form = document.getElementById('run-fields-form');
+  const existingValues = [];
+  form.querySelectorAll('input[data-field]').forEach(input => {
+    const rowIndex = parseInt(input.dataset.row || '0', 10);
+    existingValues[rowIndex] = existingValues[rowIndex] || {};
+    existingValues[rowIndex][input.dataset.field] = input.value;
+  });
   form.innerHTML = '';
   const fields = layout.fields || [];
   if (fields.length === 0) {
@@ -415,7 +495,7 @@ function renderManualRows(layout) {
       group.className = 'form-group';
       group.innerHTML = `
         <label>${escapeHtml(fieldName)}</label>
-        <input type="text" data-row="${rowIndex}" data-field="${escapeHtml(fieldName)}" placeholder="Enter ${escapeHtml(fieldName)}" />
+        <input type="text" data-row="${rowIndex}" data-field="${escapeHtml(fieldName)}" value="${escapeHtml(existingValues[rowIndex]?.[fieldName] || '')}" placeholder="Enter ${escapeHtml(fieldName)}" />
       `;
       row.appendChild(group);
     });
@@ -512,6 +592,11 @@ function initHomeEvents() {
     const action = btn.dataset.action;
     const id = btn.dataset.id;
     if (action === 'edit') {
+      const user = getCurrentUser();
+      if (!(user?.role === 'designer' || user?.role === 'super')) {
+        alert('You do not have access to edit layouts.');
+        return;
+      }
       openDesigner(id);
     } else if (action === 'run') {
       openRunView(id);
@@ -527,9 +612,17 @@ function initHomeEvents() {
 }
 
 function initLoginEvents() {
+  ['login-user-id','new-user-id','reset-user-id'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', (e) => {
+      const pos = e.target.selectionStart;
+      e.target.value = e.target.value.toUpperCase();
+      e.target.setSelectionRange(pos, pos);
+    });
+  });
+
   document.getElementById('login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const username = document.getElementById('login-user-id').value.trim();
+    const username = document.getElementById('login-user-id').value.trim().toUpperCase();
     const password = document.getElementById('login-password').value;
     const error = document.getElementById('login-error');
     const btn = document.getElementById('btn-login');
@@ -560,6 +653,7 @@ function initLoginEvents() {
 
 function openAddUserModal() {
   document.getElementById('new-user-id').value = '';
+  document.getElementById('new-user-role').value = 'user';
   document.getElementById('new-user-password').value = '';
   document.getElementById('admin-password-confirm').value = '';
   document.getElementById('reset-user-id').value = '';
@@ -567,6 +661,7 @@ function openAddUserModal() {
   document.getElementById('reset-admin-password-confirm').value = '';
   document.getElementById('add-user-error').classList.add('hidden');
   document.getElementById('reset-user-error').classList.add('hidden');
+  setUserModalTab('create');
   document.getElementById('modal-add-user').classList.remove('hidden');
 }
 
@@ -574,7 +669,21 @@ function closeAddUserModal() {
   document.getElementById('modal-add-user').classList.add('hidden');
 }
 
+function setUserModalTab(tabName) {
+  document.querySelectorAll('.modal-tab[data-user-tab]').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.userTab === tabName);
+  });
+  document.querySelectorAll('.user-tab-content').forEach(content => content.classList.remove('active'));
+  document.getElementById('user-tab-' + tabName)?.classList.add('active');
+  document.getElementById('btn-add-user-save')?.classList.toggle('hidden', tabName !== 'create');
+  document.getElementById('btn-reset-user-password')?.classList.toggle('hidden', tabName !== 'reset');
+}
+
 function initAddUserEvents() {
+  document.querySelectorAll('.modal-tab[data-user-tab]').forEach(tab => {
+    tab.addEventListener('click', () => setUserModalTab(tab.dataset.userTab));
+  });
+
   document.getElementById('btn-add-user-close').addEventListener('click', closeAddUserModal);
   document.getElementById('btn-add-user-cancel').addEventListener('click', closeAddUserModal);
   document.getElementById('modal-add-user').addEventListener('click', (e) => {
@@ -583,8 +692,9 @@ function initAddUserEvents() {
 
   document.getElementById('btn-add-user-save').addEventListener('click', async () => {
     const current = getCurrentUser();
-    const username = document.getElementById('new-user-id').value.trim();
+    const username = document.getElementById('new-user-id').value.trim().toUpperCase();
     const password = document.getElementById('new-user-password').value;
+    const role = document.getElementById('new-user-role').value || 'user';
     const adminPassword = document.getElementById('admin-password-confirm').value;
     const error = document.getElementById('add-user-error');
     const btn = document.getElementById('btn-add-user-save');
@@ -605,7 +715,7 @@ function initAddUserEvents() {
     btn.disabled = true;
     btn.textContent = 'Creating...';
     try {
-      await window.AuthStore.addUser(current.username, adminPassword, username, password);
+      await window.AuthStore.addUser(current.username, adminPassword, username, password, role);
       closeAddUserModal();
       showToast(`User "${username}" created.`);
     } catch (err) {
@@ -619,7 +729,7 @@ function initAddUserEvents() {
 
   document.getElementById('btn-reset-user-password').addEventListener('click', async () => {
     const current = getCurrentUser();
-    const username = document.getElementById('reset-user-id').value.trim();
+    const username = document.getElementById('reset-user-id').value.trim().toUpperCase();
     const newPassword = document.getElementById('reset-user-password').value;
     const adminPassword = document.getElementById('reset-admin-password-confirm').value;
     const error = document.getElementById('reset-user-error');
