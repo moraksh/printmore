@@ -911,9 +911,21 @@ textarea { resize: vertical; }
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+.canvas-element.multi-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .canvas-element:not(.selected):hover {
   outline: 1px dashed var(--border-light);
   outline-offset: 1px;
+}
+.selection-marquee {
+  position: absolute;
+  border: 1px dashed var(--accent);
+  background: rgba(108, 99, 255, 0.12);
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 999;
 }
 
 .el-text, .el-field {

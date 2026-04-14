@@ -382,6 +382,11 @@ function compactKey(value) {
   return String(value || '').toLowerCase().replace(/[\s_-]+/g, '');
 }
 
+function smartLabel(value) {
+  const text = String(value || '').trim();
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : '';
+}
+
 function matchesSmartRule(field, rules) {
   const key = compactKey(field);
   return (rules || []).some(rule => {
@@ -437,7 +442,7 @@ function renderTemplatePreview(templateId) {
   const box = (label, left, top, width = 96, height = 11) => `<div class="tpl-box" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px;"><span style="font-size:7px;position:absolute;left:4px;top:2px;">${escapeHtml(label)}</span></div>`;
   const table = (top, rows = 4, left = 16, width = 223) => `
     <table class="tpl-table" style="top:${top}px;left:${left}px;width:${width}px;">
-      <tr>${tableLabels.map(l => `<th>${escapeHtml(l)}</th>`).join('')}</tr>
+      <tr>${tableLabels.map(l => `<th>${escapeHtml(smartLabel(l))}</th>`).join('')}</tr>
       ${Array.from({ length: rows }).map(() => `<tr>${tableLabels.map(() => '<td>&nbsp;</td>').join('')}</tr>`).join('')}
     </table>`;
   let body = '';
@@ -475,45 +480,52 @@ function buildTemplateElements(template, layout) {
     { id: makeId('line'), type: 'line', x: 8, y: 19, width: 190, height: 2, lineDirection: 'horizontal', style: { ...baseStyle, borderWidth: 1, borderColor: '#000000' } },
   ];
   const addPair = (field, x, y, w = 86) => {
-    elements.push({ id: makeId('lbl'), type: 'text', x, y, width: 28, height: 5, content: field, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5, fontWeight: 'bold' } });
+    elements.push({ id: makeId('lbl'), type: 'text', x, y, width: 28, height: 5, content: smartLabel(field), fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5, fontWeight: 'bold' } });
     elements.push({ id: makeId('fld'), type: 'field', x: x + 29, y, width: w - 29, height: 5, content: '', fieldName: field, imageData: '', style: { ...baseStyle, fontSize: 7.5 } });
   };
-  const headerFields = picked === 'layout-5' ? ctx.fields.slice(0, 8) : ctx.header.slice(0, 4);
+  const addFieldGrid = (fieldList, x, y, cols = 2, colWidth = 95, rowGap = 6, cellWidth = 86) => {
+    fieldList.forEach((field, index) => {
+      addPair(field, x + (index % cols) * colWidth, y + Math.floor(index / cols) * rowGap, cellWidth);
+    });
+    return y + Math.ceil(fieldList.length / cols) * rowGap;
+  };
+  const headerFields = picked === 'layout-5' ? ctx.fields : ctx.header;
+  const headerCols = picked === 'layout-2' ? 3 : 2;
+  const headerColWidth = picked === 'layout-2' ? 64 : 95;
+  const headerCellWidth = picked === 'layout-2' ? 58 : 86;
+  let headerEndY = 24;
   if (picked === 'layout-2') {
-    headerFields.slice(0, 3).forEach((field, index) => addPair(field, 8 + index * 64, 24, 58));
+    headerEndY = addFieldGrid(headerFields, 8, 24, headerCols, headerColWidth, 6, headerCellWidth);
   } else if (picked === 'layout-3') {
-    headerFields.slice(0, 3).forEach((field, index) => addPair(field, index === 2 ? 8 : 8 + index * 95, index === 2 ? 36 : 24, index === 2 ? 180 : 86));
+    headerEndY = addFieldGrid(headerFields, 8, 24, 2, 95, 6, 86);
   } else if (picked === 'layout-4') {
-    headerFields.forEach((field, index) => addPair(field, 8 + (index % 2) * 95, 24 + Math.floor(index / 2) * 6));
+    headerEndY = addFieldGrid(headerFields, 8, 24, 2, 95, 6, 86);
   } else {
-    headerFields.forEach((field, index) => addPair(field, 8 + (index % 2) * 95, 24 + Math.floor(index / 2) * 6));
+    headerEndY = addFieldGrid(headerFields, 8, 24, 2, 95, 6, 86);
   }
 
   if (picked === 'layout-5') {
-    elements.push({ id: makeId('remarks'), type: 'rect', x: 8, y: 52, width: 190, height: 20, content: '', fieldName: '', imageData: '', style: { ...baseStyle, borderWidth: 1 } });
-    elements.push({ id: makeId('remarkslbl'), type: 'text', x: 10, y: 54, width: 60, height: 5, content: ctx.footer[0] || 'Remarks', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5, fontWeight: 'bold' } });
-    elements.push({ id: makeId('checked'), type: 'rect', x: 8, y: 78, width: 60, height: 11, content: '', fieldName: '', imageData: '', style: { ...baseStyle, borderWidth: 1 } });
-    elements.push({ id: makeId('checkedlbl'), type: 'text', x: 10, y: 80, width: 50, height: 5, content: 'Checked By', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5 } });
+    const remarksY = Math.max(44, headerEndY + 4);
+    elements.push({ id: makeId('remarks'), type: 'rect', x: 8, y: remarksY, width: 190, height: 18, content: '', fieldName: '', imageData: '', style: { ...baseStyle, borderWidth: 1 } });
+    elements.push({ id: makeId('remarkslbl'), type: 'text', x: 10, y: remarksY + 2, width: 60, height: 5, content: smartLabel(ctx.footer[0] || 'Remarks'), fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5, fontWeight: 'bold' } });
     return elements;
   }
 
   const tableFields = ctx.table.length ? ctx.table : ctx.fields.slice(0, 1);
   const tableCols = Math.max(1, tableFields.length);
   const cells = tableFields.flatMap((field, col) => [
-    { row: 0, col, fieldName: '', content: field, style: { fontWeight: 'bold' } },
+    { row: 0, col, fieldName: '', content: smartLabel(field), style: { fontWeight: 'bold' } },
     { row: 1, col, fieldName: field, content: '', style: {} },
   ]);
+  const tableY = Math.max(picked === 'layout-2' ? 34 : (picked === 'layout-3' ? 46 : 40), headerEndY + 4);
   elements.push({
-    id: makeId('tbl'), type: 'table', x: 8, y: picked === 'layout-2' ? 34 : (picked === 'layout-3' ? 46 : 40), width: 190, height: 10,
+    id: makeId('tbl'), type: 'table', x: 8, y: tableY, width: 190, height: 10,
     content: '', fieldName: '', imageData: '',
     style: { ...baseStyle, fontSize: tableCols > 6 ? 7 : 8, borderWidth: 1, borderColor: '#000000', borderStyle: 'solid' },
     table: { rows: 2, cols: tableCols, cells, theme: 'plain', borderMode: 'all', colWidths: Array(tableCols).fill(1), rowHeights: [5, 5], detailMode: true, colProps: [] },
   });
-  if (picked === 'layout-4') {
-    elements.push({ id: makeId('remarks'), type: 'rect', x: 8, y: 58, width: 120, height: 16, content: '', fieldName: '', imageData: '', style: { ...baseStyle, borderWidth: 1 } });
-    elements.push({ id: makeId('remarkslbl'), type: 'text', x: 10, y: 60, width: 50, height: 5, content: ctx.footer[0] || 'Remarks', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5 } });
-    elements.push({ id: makeId('sign'), type: 'rect', x: 135, y: 58, width: 55, height: 14, content: '', fieldName: '', imageData: '', style: { ...baseStyle, borderWidth: 1 } });
-    elements.push({ id: makeId('signlbl'), type: 'text', x: 137, y: 60, width: 40, height: 5, content: 'Signature', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5 } });
+  if (ctx.footer.length) {
+    addFieldGrid(ctx.footer, 8, tableY + 16, 2, 95, 6, 86);
   }
   return elements;
 }

@@ -11,17 +11,20 @@ const MIN_ELEMENT_SIZE = 5; // mm
 class Designer {
   constructor(layoutId) {
     this.layoutId = layoutId;
-    this.layout = null;
-    this.elements = [];
-    this.selectedId = null;
-    this.activeTool = 'select';
+      this.layout = null;
+      this.elements = [];
+      this.selectedId = null;
+      this.selectedIds = [];
+      this.activeTool = 'select';
     this.zoom = 1;
     this.showGrid = true;
 
     // Drag/resize state
     this.dragState = null;
-    this.resizeState = null;
-    this.drawState = null;    // for drawing new elements by drag
+      this.resizeState = null;
+      this.drawState = null;    // for drawing new elements by drag
+      this.marqueeState = null; // for left-drag multi-select
+      this.suppressNextContextMenu = false;
 
     // Field drag from panel
     this.fieldDragName = null;
@@ -95,11 +98,13 @@ class Designer {
 
     document.addEventListener('mousemove', this._boundMouseMove);
     document.addEventListener('mouseup', this._boundMouseUp);
+    document.addEventListener('keydown', this._boundKeyDown);
   }
 
   destroy() {
     document.removeEventListener('mousemove', this._boundMouseMove);
     document.removeEventListener('mouseup', this._boundMouseUp);
+    document.removeEventListener('keydown', this._boundKeyDown);
     if (this.scrollArea && this._boundRulerScroll) {
       this.scrollArea.removeEventListener('scroll', this._boundRulerScroll);
       this._boundRulerScroll = null;
@@ -282,23 +287,17 @@ class Designer {
   }
 
   // ===== Render Elements =====
-  renderElements() {
-    // Remove all elements except the margin guide and grid-canvas
-    this.pageCanvas.querySelectorAll('.canvas-element').forEach(el => el.remove());
+    renderElements() {
+      // Remove all elements except the margin guide and grid-canvas
+      this.pageCanvas.querySelectorAll('.canvas-element').forEach(el => el.remove());
 
     this.elements.forEach(el => {
       this._renderElement(el);
     });
 
-    // Re-select if needed
-    if (this.selectedId) {
-      const domEl = this.pageCanvas.querySelector(`[data-id="${this.selectedId}"]`);
-      if (domEl) {
-        domEl.classList.add('selected');
-        this._renderResizeHandles(domEl, this.selectedId);
-      }
+      // Re-select if needed
+      this._applySelectionToDOM();
     }
-  }
 
   _renderElement(el) {
     const domEl = document.createElement('div');
@@ -1182,9 +1181,16 @@ class Designer {
   }
 
   // ===== Canvas Events =====
-  initCanvasEvents() {
-    this.pageCanvas.addEventListener('mousedown', (e) => this.handleCanvasMouseDown(e));
-    this.pageCanvas.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+    initCanvasEvents() {
+      this.pageCanvas.addEventListener('mousedown', (e) => this.handleCanvasMouseDown(e));
+      this.pageCanvas.addEventListener('contextmenu', (e) => {
+        if (this.suppressNextContextMenu) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.suppressNextContextMenu = false;
+        }
+      });
+      this.pageCanvas.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
     this.pageCanvas.addEventListener('drop', (e) => this._onCanvasDrop(e));
 
     // Hide context menu on outside click
@@ -1224,13 +1230,13 @@ class Designer {
     const isCanvasElement = target.closest('.canvas-element');
     if (isCanvasElement) return; // handled by element event
 
-    // Deselect
-    this.deselectAll();
-
     if (this.activeTool === 'select') {
-      e.preventDefault();
+      this._startMarqueeSelect(e);
       return;
     }
+
+    // Deselect
+    this.deselectAll();
 
     // Start drawing a new element
     const rect = this.pageCanvas.getBoundingClientRect();
@@ -1260,7 +1266,9 @@ class Designer {
   handleCanvasMouseMove(e) {
     if (this.colResizeState) { this._performColResize(e); return; }
     if (this.rowResizeState) { this._performRowResize(e); return; }
-    if (this.dragState) {
+    if (this.marqueeState) {
+      this._performMarqueeSelect(e);
+    } else if (this.dragState) {
       this._performDrag(e);
     } else if (this.resizeState) {
       this._performResize(e);
@@ -1276,6 +1284,7 @@ class Designer {
     if (this.rowResizeState) {
       this.saveToHistory(); this._saveLayoutElements(); this.rowResizeState = null; return;
     }
+    if (this.marqueeState) { this._finishMarqueeSelect(e); return; }
     if (this.drawState) { this._finishDraw(e); }
     if (this.dragState) { this._finishDrag(); }
     if (this.resizeState) { this._finishResize(); }
@@ -1300,7 +1309,7 @@ class Designer {
     ghost.style.height = h + 'px';
   }
 
-  _finishDraw(e) {
+    _finishDraw(e) {
     if (!this.drawState) return;
     const ghost = this.drawState.ghostEl;
     if (ghost) ghost.remove();
@@ -1338,10 +1347,80 @@ class Designer {
     }
 
     // Switch back to select after placing
-    this.setActiveTool('select');
+      this.setActiveTool('select');
+    }
+
+  _startMarqueeSelect(e) {
+    const rect = this.pageCanvas.getBoundingClientRect();
+    const xPx = e.clientX - rect.left;
+    const yPx = e.clientY - rect.top;
+    const box = document.createElement('div');
+    box.className = 'selection-marquee';
+    box.style.left = xPx + 'px';
+    box.style.top = yPx + 'px';
+    box.style.width = '0px';
+    box.style.height = '0px';
+    this.pageCanvas.appendChild(box);
+    this.marqueeState = {
+      startX: xPx,
+      startY: yPx,
+      currentX: xPx,
+      currentY: yPx,
+      box,
+      moved: false,
+      targetElementId: e.target.closest('.canvas-element')?.dataset.id || null,
+    };
+    e.preventDefault();
+    e.stopPropagation();
   }
 
-  // ===== Element Creation =====
+  _performMarqueeSelect(e) {
+    if (!this.marqueeState) return;
+    const rect = this.pageCanvas.getBoundingClientRect();
+    const xPx = e.clientX - rect.left;
+    const yPx = e.clientY - rect.top;
+    const ms = this.marqueeState;
+    ms.currentX = xPx;
+    ms.currentY = yPx;
+    ms.moved = ms.moved || Math.abs(xPx - ms.startX) > 3 || Math.abs(yPx - ms.startY) > 3;
+    const x = Math.min(xPx, ms.startX);
+    const y = Math.min(yPx, ms.startY);
+    const w = Math.abs(xPx - ms.startX);
+    const h = Math.abs(yPx - ms.startY);
+    ms.box.style.left = x + 'px';
+    ms.box.style.top = y + 'px';
+    ms.box.style.width = w + 'px';
+    ms.box.style.height = h + 'px';
+  }
+
+  _finishMarqueeSelect(e) {
+    const ms = this.marqueeState;
+    if (!ms) return;
+    const box = ms.box;
+    if (box) box.remove();
+    this.marqueeState = null;
+
+    if (!ms.moved) {
+      this.suppressNextContextMenu = false;
+      if (ms.targetElementId) this.selectElement(ms.targetElementId);
+      else this.deselectAll();
+      return;
+    }
+
+    this.suppressNextContextMenu = false;
+    const left = this._pxToMm(Math.min(ms.startX, ms.currentX));
+    const top = this._pxToMm(Math.min(ms.startY, ms.currentY));
+    const right = this._pxToMm(Math.max(ms.startX, ms.currentX));
+    const bottom = this._pxToMm(Math.max(ms.startY, ms.currentY));
+    const ids = this.elements
+      .filter(el => el.x < right && el.x + el.width > left && el.y < bottom && el.y + el.height > top)
+      .map(el => el.id);
+    this.selectElements(ids);
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+    // ===== Element Creation =====
   createElement(type, x, y) {
     return this._createElementData(type, x, y);
   }
@@ -1396,31 +1475,53 @@ class Designer {
   }
 
   // ===== Selection =====
+  _applySelectionToDOM() {
+    const selected = new Set(this.selectedIds || []);
+    this.pageCanvas.querySelectorAll('.canvas-element').forEach(el => {
+      const isSelected = selected.has(el.dataset.id);
+      el.classList.toggle('selected', isSelected);
+      el.classList.toggle('multi-selected', isSelected && selected.size > 1);
+    });
+    this._removeResizeHandles();
+    if (this.selectedId && selected.size <= 1) {
+      const domEl = this.pageCanvas.querySelector(`[data-id="${this.selectedId}"]`);
+      if (domEl) this._renderResizeHandles(domEl, this.selectedId);
+    }
+  }
+
   selectElement(id) {
     this.selectedId = id;
+    this.selectedIds = id ? [id] : [];
     if (!id) {
       this.selectedCell = null;
       this.pageCanvas.querySelectorAll('.el-table-cell').forEach(cell => {
         cell.style.outline = 'none';
       });
     }
-    this.pageCanvas.querySelectorAll('.canvas-element').forEach(el => {
-      el.classList.remove('selected');
-    });
-    this._removeResizeHandles();
+    this._applySelectionToDOM();
 
     if (!id) {
       this._showNoSelectionPanel();
       return;
     }
 
-    const domEl = this.pageCanvas.querySelector(`[data-id="${id}"]`);
-    if (domEl) {
-      domEl.classList.add('selected');
-      this._renderResizeHandles(domEl, id);
-    }
-
     this._showElementProperties(id);
+  }
+
+  selectElements(ids) {
+    const cleanIds = [...new Set((ids || []).filter(id => this._findElement(id)))];
+    this.selectedIds = cleanIds;
+    this.selectedId = cleanIds[0] || null;
+    this.selectedCell = null;
+    this.pageCanvas.querySelectorAll('.el-table-cell').forEach(cell => {
+      cell.style.outline = 'none';
+    });
+    this._applySelectionToDOM();
+    if (!this.selectedId) {
+      this._showNoSelectionPanel();
+    } else {
+      this._showElementProperties(this.selectedId);
+    }
   }
 
   deselectAll() {
@@ -1439,7 +1540,9 @@ class Designer {
     if (e.target.classList.contains('row-resize-handle')) return;
     if (e.target.classList.contains('inline-editor')) return;
 
-    this.selectElement(elementId);
+    if (!this.selectedIds.includes(elementId)) {
+      this.selectElement(elementId);
+    }
     this.startDrag(e, elementId);
   }
 
@@ -1447,11 +1550,17 @@ class Designer {
     const el = this._findElement(elementId);
     if (!el) return;
 
-    const domEl = this.pageCanvas.querySelector(`[data-id="${elementId}"]`);
-    const rect = this.pageCanvas.getBoundingClientRect();
+    const dragIds = this.selectedIds.includes(elementId) ? this.selectedIds.slice() : [elementId];
+    const startPositions = {};
+    dragIds.forEach(id => {
+      const item = this._findElement(id);
+      if (item) startPositions[id] = { x: item.x, y: item.y, width: item.width, height: item.height };
+    });
 
     this.dragState = {
       elementId,
+      elementIds: dragIds,
+      startPositions,
       startMouseX: e.clientX,
       startMouseY: e.clientY,
       startElX: el.x,
@@ -1521,29 +1630,49 @@ class Designer {
     const dxMm = this._pxToMm(dxPx);
     const dyMm = this._pxToMm(dyPx);
 
-    const el = this._findElement(ds.elementId);
-    if (!el) return;
-
     const { pageWidthMm, pageHeightMm } = this._getPageDimensions();
-    el.x = Math.max(0, Math.min(pageWidthMm - el.width, ds.startElX + dxMm));
-    el.y = Math.max(0, Math.min(pageHeightMm - el.height, ds.startElY + dyMm));
+    const ids = ds.elementIds || [ds.elementId];
+    const starts = ds.startPositions || {};
+    const bounds = ids.reduce((acc, id) => {
+      const start = starts[id];
+      if (!start) return acc;
+      acc.left = Math.min(acc.left, start.x);
+      acc.top = Math.min(acc.top, start.y);
+      acc.right = Math.max(acc.right, start.x + start.width);
+      acc.bottom = Math.max(acc.bottom, start.y + start.height);
+      return acc;
+    }, { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity });
+    const clampedDxMm = Number.isFinite(bounds.left)
+      ? Math.max(-bounds.left, Math.min(pageWidthMm - bounds.right, dxMm))
+      : dxMm;
+    const clampedDyMm = Number.isFinite(bounds.top)
+      ? Math.max(-bounds.top, Math.min(pageHeightMm - bounds.bottom, dyMm))
+      : dyMm;
 
-    // Update DOM position
-    const domEl = this.pageCanvas.querySelector(`[data-id="${ds.elementId}"]`);
-    if (domEl) {
-      domEl.style.left = this._mmToPx(el.x) + 'px';
-      domEl.style.top = this._mmToPx(el.y) + 'px';
-    }
+    ids.forEach(id => {
+      const el = this._findElement(id);
+      const start = starts[id];
+      if (!el || !start) return;
+      el.x = start.x + clampedDxMm;
+      el.y = start.y + clampedDyMm;
+
+      const domEl = this.pageCanvas.querySelector(`[data-id="${id}"]`);
+      if (domEl) {
+        domEl.style.left = this._mmToPx(el.x) + 'px';
+        domEl.style.top = this._mmToPx(el.y) + 'px';
+      }
+    });
 
     // Update position fields in properties panel
+    const el = this._findElement(ds.elementId);
     const propX = document.getElementById('prop-x');
     const propY = document.getElementById('prop-y');
-    if (propX && document.getElementById('element-properties')?.classList.contains('hidden') === false) {
+    if (el && propX && document.getElementById('element-properties')?.classList.contains('hidden') === false) {
       propX.value = el.x.toFixed(1);
       propY.value = el.y.toFixed(1);
     }
 
-    this._showAlignGuides(el);
+    if (el) this._showAlignGuides(el);
   }
 
   _finishDrag() {
@@ -1554,6 +1683,38 @@ class Designer {
     }
     this.dragState = null;
     this._hideAlignGuides();
+  }
+
+  _moveSelectedBy(dxMm, dyMm) {
+    const ids = this.selectedIds.length ? this.selectedIds : (this.selectedId ? [this.selectedId] : []);
+    if (!ids.length) return;
+
+    const { pageWidthMm, pageHeightMm } = this._getPageDimensions();
+    const bounds = ids.reduce((acc, id) => {
+      const el = this._findElement(id);
+      if (!el) return acc;
+      acc.left = Math.min(acc.left, el.x);
+      acc.top = Math.min(acc.top, el.y);
+      acc.right = Math.max(acc.right, el.x + el.width);
+      acc.bottom = Math.max(acc.bottom, el.y + el.height);
+      return acc;
+    }, { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity });
+    if (!Number.isFinite(bounds.left)) return;
+
+    const moveX = Math.max(-bounds.left, Math.min(pageWidthMm - bounds.right, dxMm));
+    const moveY = Math.max(-bounds.top, Math.min(pageHeightMm - bounds.bottom, dyMm));
+    if (moveX === 0 && moveY === 0) return;
+
+    this.saveToHistory();
+    ids.forEach(id => {
+      const el = this._findElement(id);
+      if (!el) return;
+      el.x += moveX;
+      el.y += moveY;
+    });
+    this.renderElements();
+    this.selectElements(ids);
+    this._saveLayoutElements();
   }
 
   // ===== Resize =====
@@ -1699,6 +1860,12 @@ class Designer {
 
   // ===== Context Menu =====
   _onElementContextMenu(e, elementId) {
+    if (this.suppressNextContextMenu) {
+      e.preventDefault();
+      e.stopPropagation();
+      this.suppressNextContextMenu = false;
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     this.selectElement(elementId);
@@ -1735,27 +1902,34 @@ class Designer {
 
   // ===== Element operations =====
   deleteSelected() {
-    if (!this.selectedId) return;
+    const ids = this.selectedIds.length ? this.selectedIds : (this.selectedId ? [this.selectedId] : []);
+    if (!ids.length) return;
     this.saveToHistory();
-    this.elements = this.elements.filter(el => el.id !== this.selectedId);
+    this.elements = this.elements.filter(el => !ids.includes(el.id));
     this.selectedId = null;
+    this.selectedIds = [];
     this.renderElements();
     this._showNoSelectionPanel();
     this._saveLayoutElements();
   }
 
   duplicateSelected() {
-    if (!this.selectedId) return;
-    const original = this._findElement(this.selectedId);
-    if (!original) return;
+    const ids = this.selectedIds.length ? this.selectedIds : (this.selectedId ? [this.selectedId] : []);
+    if (!ids.length) return;
     this.saveToHistory();
-    const copy = JSON.parse(JSON.stringify(original));
-    copy.id = 'el-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 5);
-    copy.x += 5;
-    copy.y += 5;
-    this.elements.push(copy);
+    const copies = ids
+      .map(id => this._findElement(id))
+      .filter(Boolean)
+      .map(original => {
+        const copy = JSON.parse(JSON.stringify(original));
+        copy.id = 'el-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 5);
+        copy.x += 5;
+        copy.y += 5;
+        return copy;
+      });
+    this.elements.push(...copies);
     this.renderElements();
-    this.selectElement(copy.id);
+    this.selectElements(copies.map(copy => copy.id));
     this._saveLayoutElements();
   }
 
@@ -2598,15 +2772,18 @@ class Designer {
 
   // ===== Style / Content update =====
   updateElementStyle(id, styleProps) {
-    const el = this._findElement(id);
-    if (!el) return;
-    el.style = { ...el.style, ...styleProps };
+    const ids = this.selectedIds.length > 1 && this.selectedIds.includes(id) ? this.selectedIds : [id];
+    ids.forEach(itemId => {
+      const el = this._findElement(itemId);
+      if (!el) return;
+      el.style = { ...el.style, ...styleProps };
 
-    // Re-render the specific DOM element
-    const domEl = this.pageCanvas.querySelector(`[data-id="${id}"]`);
-    if (!domEl) return;
+      const domEl = this.pageCanvas.querySelector(`[data-id="${itemId}"]`);
+      if (!domEl) return;
 
-    this._applyStylesToDOM(domEl, el);
+      this._applyStylesToDOM(domEl, el);
+    });
+    this._applySelectionToDOM();
     this._debounceSave();
   }
 
@@ -2814,6 +2991,17 @@ class Designer {
   }
 
   _onKeyDown(e) {
-    // Handled in app.js
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+    const active = document.activeElement;
+    if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return;
+    if (this.activeTool !== 'select') return;
+    const ids = this.selectedIds.length ? this.selectedIds : (this.selectedId ? [this.selectedId] : []);
+    if (!ids.length) return;
+
+    const step = e.shiftKey ? 5 : 1;
+    const dx = e.key === 'ArrowLeft' ? -step : (e.key === 'ArrowRight' ? step : 0);
+    const dy = e.key === 'ArrowUp' ? -step : (e.key === 'ArrowDown' ? step : 0);
+    this._moveSelectedBy(dx, dy);
+    e.preventDefault();
   }
 }
