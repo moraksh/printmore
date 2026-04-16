@@ -1223,6 +1223,10 @@ class Designer {
   }
 
   handleCanvasMouseDown(e) {
+    if (this.activeTool === 'select' && e.button === 2) {
+      this._startMarqueeSelect(e);
+      return;
+    }
     if (e.button !== 0) return;
 
     // Click on empty canvas
