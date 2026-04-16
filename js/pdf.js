@@ -778,16 +778,20 @@ async function generatePDF(layout, fieldValues, detailRows) {
 
   renderArea.innerHTML = '';
 
-  // Download result with stable filename: LayoutName_DDMMYYYYHHMMSS.pdf
+  // Open result in a new tab first (no forced download).
+  // If popup is blocked, fallback to download.
   const pdfBlob = doc.output('blob');
   const fileName = `${_sanitizePdfBaseName(layout?.name)}_${_pdfTimestampDDMMYYYYHHMMSS()}.pdf`;
   const blobUrl = URL.createObjectURL(pdfBlob);
-  const link = document.createElement('a');
-  link.href = blobUrl;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
+  const opened = window.open(blobUrl, '_blank');
+  if (!opened) {
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
   setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
   return pdfBlob;
 }
