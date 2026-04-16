@@ -23,6 +23,15 @@ function _pdfTimestampDDMMYYYYHHMMSS() {
   return `${pad(now.getDate())}${pad(now.getMonth() + 1)}${now.getFullYear()}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 }
 
+function _escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /**
  * Format a date/time string using a format pattern.
  */
@@ -778,13 +787,39 @@ async function generatePDF(layout, fieldValues, detailRows) {
 
   renderArea.innerHTML = '';
 
-  // Open result in a new tab first (no forced download).
-  // If popup is blocked, fallback to download.
+  // Open preview tab first with explicit Download button using the desired filename.
+  // If popup is blocked, fallback to direct download.
   const pdfBlob = doc.output('blob');
   const fileName = `${_sanitizePdfBaseName(layout?.name)}_${_pdfTimestampDDMMYYYYHHMMSS()}.pdf`;
   const blobUrl = URL.createObjectURL(pdfBlob);
-  const opened = window.open(blobUrl, '_blank');
-  if (!opened) {
+  const opened = window.open('', '_blank');
+  if (opened) {
+    const safeName = _escapeHtml(fileName);
+    opened.document.open();
+    opened.document.write(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${safeName}</title>
+  <style>
+    body{margin:0;font-family:Arial,sans-serif;background:#f2f3f7;}
+    .bar{height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:#ffffff;border-bottom:1px solid #d9dbe3;box-sizing:border-box;}
+    .name{font-size:13px;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70vw;}
+    .btn{display:inline-flex;align-items:center;justify-content:center;height:30px;padding:0 12px;border:1px solid #2563eb;border-radius:6px;background:#2563eb;color:#fff;font-size:12px;text-decoration:none;}
+    iframe{width:100%;height:calc(100vh - 44px);border:0;display:block;background:#fff;}
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <div class="name">${safeName}</div>
+    <a class="btn" href="${blobUrl}" download="${safeName}">Download PDF</a>
+  </div>
+  <iframe src="${blobUrl}" title="${safeName}"></iframe>
+</body>
+</html>`);
+    opened.document.close();
+  } else {
     const link = document.createElement('a');
     link.href = blobUrl;
     link.download = fileName;
