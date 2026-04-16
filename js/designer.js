@@ -677,11 +677,16 @@ class Designer {
           cell.textContent = '';
         }
 
-        // Single-click: select cell when table already selected
+        // Single-click in header selects the whole column (for barcode/column props).
+        // Use Ctrl+click on header when you want only that one header cell selected.
         cell.addEventListener('click', (e) => {
           e.stopPropagation();
           if (this.selectedId === el.id) {
-            this._selectTableCell(el.id, r, c);
+            if (r === 0 && !e.ctrlKey) {
+              this._selectTableColumn(el.id, c);
+            } else {
+              this._selectTableCell(el.id, r, c);
+            }
           }
         });
 
