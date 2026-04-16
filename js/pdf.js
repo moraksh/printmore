@@ -8,6 +8,21 @@ const PDF_MM_TO_PX = 3.7795; // same scale as designer for rendering
 const PDF_HD_CANVAS_SCALE = 3;
 const PDF_LARGE_JOB_CANVAS_SCALE = 2;
 
+function _sanitizePdfBaseName(name) {
+  const cleaned = String(name || 'Layout')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return cleaned || 'Layout';
+}
+
+function _pdfTimestampDDMMYYYYHHMMSS() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(now.getDate())}${pad(now.getMonth() + 1)}${now.getFullYear()}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+
 /**
  * Format a date/time string using a format pattern.
  */
@@ -763,15 +778,16 @@ async function generatePDF(layout, fieldValues, detailRows) {
 
   renderArea.innerHTML = '';
 
-  // Open result
+  // Download result with stable filename: LayoutName_DDMMYYYYHHMMSS.pdf
   const pdfBlob = doc.output('blob');
+  const fileName = `${_sanitizePdfBaseName(layout?.name)}_${_pdfTimestampDDMMYYYYHHMMSS()}.pdf`;
   const blobUrl = URL.createObjectURL(pdfBlob);
-  const newTab = window.open(blobUrl, '_blank');
-  if (newTab) {
-    newTab.addEventListener('load', () => {
-      setTimeout(() => { try { newTab.print(); } catch(e) {} }, 500);
-    });
-  }
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
   setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
   return pdfBlob;
 }
