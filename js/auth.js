@@ -2,7 +2,7 @@
  * PrintMore user login helpers.
  *
  * Passwords are verified by Supabase SQL functions. The browser stores only
- * the logged-in user's id, username, and super-user flag for the current tab.
+ * the logged-in user's id, username, role, and super-user flag for the tab.
  */
 
 'use strict';
@@ -21,8 +21,22 @@ const AuthStore = (() => {
     return {
       id: user.id,
       username: String(user.username || '').toUpperCase(),
+      fullName: String(user.full_name || user.fullName || '').trim(),
       role: user.role || (user.is_super_user || user.isSuperUser ? 'super' : 'user'),
       isSuperUser: Boolean(user.is_super_user ?? user.isSuperUser),
+    };
+  }
+
+  function normalizeManagedUser(user) {
+    if (!user) return null;
+    return {
+      id: user.id,
+      username: String(user.username || '').toUpperCase(),
+      fullName: String(user.full_name || user.fullName || '').trim(),
+      role: user.role || 'user',
+      isSuperUser: Boolean(user.is_super_user ?? user.isSuperUser),
+      active: Boolean(user.active),
+      lastLoginAt: user.last_login_at || user.lastLoginAt || null,
     };
   }
 
@@ -60,13 +74,14 @@ const AuthStore = (() => {
     return normalizeUser(user);
   }
 
-  async function addUser(adminUsername, adminPassword, username, password, role = 'user') {
+  async function addUser(adminUsername, adminPassword, username, fullName, password, role = 'user') {
     if (!client) throw new Error('Supabase is not configured.');
 
     const { data, error } = await client.rpc('create_printmore_user', {
       p_admin_username: adminUsername,
       p_admin_password: adminPassword,
       p_username: username,
+      p_full_name: fullName,
       p_password: password,
       p_role: role,
     });
@@ -103,6 +118,53 @@ const AuthStore = (() => {
     return normalizeUser(Array.isArray(data) ? data[0] : data);
   }
 
+  async function updateUser(adminUsername, adminPassword, username, role, active) {
+    if (!client) throw new Error('Supabase is not configured.');
+
+    const { data, error } = await client.rpc('update_printmore_user', {
+      p_admin_username: adminUsername,
+      p_admin_password: adminPassword,
+      p_username: username,
+      p_role: role,
+      p_active: active,
+    });
+
+    if (error) throw error;
+    return normalizeUser(Array.isArray(data) ? data[0] : data);
+  }
+
+  async function findUser(username) {
+    if (!client) throw new Error('Supabase is not configured.');
+    const { data, error } = await client.rpc('find_printmore_user', {
+      p_username: username,
+    });
+    if (error) throw error;
+    const user = Array.isArray(data) ? data[0] : data;
+    if (!user) return null;
+    return normalizeUser(user);
+  }
+
+  async function listUsers(adminUsername, adminPassword) {
+    if (!client) throw new Error('Supabase is not configured.');
+    const { data, error } = await client.rpc('list_printmore_users', {
+      p_admin_username: adminUsername,
+      p_admin_password: adminPassword,
+    });
+    if (error) throw error;
+    return Array.isArray(data) ? data.map(normalizeManagedUser).filter(Boolean) : [];
+  }
+
+  async function deleteUser(adminUsername, adminPassword, username) {
+    if (!client) throw new Error('Supabase is not configured.');
+    const { data, error } = await client.rpc('delete_printmore_user', {
+      p_admin_username: adminUsername,
+      p_admin_password: adminPassword,
+      p_username: username,
+    });
+    if (error) throw error;
+    return normalizeUser(Array.isArray(data) ? data[0] : data);
+  }
+
   return {
     currentUser,
     login,
@@ -110,6 +172,10 @@ const AuthStore = (() => {
     addUser,
     resetPassword,
     setUserActive,
+    updateUser,
+    findUser,
+    listUsers,
+    deleteUser,
   };
 })();
 

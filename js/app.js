@@ -15,10 +15,25 @@ const PAGE_SIZES = {
   Legal:  { width: 215.9, height: 355.6 },
 };
 
+function getPageSizeMm(page) {
+  if ((page?.size || 'A4') === 'custom') {
+    let w = Math.max(20, parseFloat(page?.customWidthMm ?? page?.customWidth) || 210);
+    let h = Math.max(20, parseFloat(page?.customHeightMm ?? page?.customHeight) || 297);
+    if ((page?.orientation || 'portrait') === 'landscape') [w, h] = [h, w];
+    return { width: w, height: h };
+  }
+  let { width, height } = PAGE_SIZES[page?.size] || PAGE_SIZES.A4;
+  if ((page?.orientation || 'portrait') === 'landscape') [width, height] = [height, width];
+  return { width, height };
+}
+
 // ===== State =====
 let currentView = 'home';
 let currentLayoutId = null;
 let designerInstance = null;
+let shareLayoutModalId = null;
+let currentSessionPassword = '';
+let selectedManagedUser = null;
 
 // Parsed data storage for Run view
 let runParsedData = null;
@@ -248,7 +263,7 @@ function renderHomeView() {
       <div class="layout-card-actions">
         ${canDesign ? `<button class="btn btn-primary btn-sm" data-action="edit" data-id="${layout.id}">Edit</button>` : ''}
         <button class="btn btn-secondary btn-sm" data-action="run" data-id="${layout.id}">Run</button>
-        <button class="btn btn-ghost btn-sm" data-action="export" data-id="${layout.id}" title="Download as JSON">&#8595; Export</button>
+        <button class="btn btn-ghost btn-sm" data-action="share" data-id="${layout.id}" title="Share or download">Share</button>
         ${canDesign ? `<button class="btn btn-danger btn-sm" data-action="delete" data-id="${layout.id}">Delete</button>` : ''}
       </div>
     `;
@@ -269,9 +284,13 @@ function showSetupView(prefill) {
   setupStep = 1;
   showView('setup');
   showSetupStep(1);
+  const customWidth = prefill?.page?.customWidthMm ?? prefill?.page?.customWidth ?? 210;
+  const customHeight = prefill?.page?.customHeightMm ?? prefill?.page?.customHeight ?? 297;
   document.getElementById('layout-name').value = prefill?.name || '';
   document.getElementById('page-size').value = prefill?.page?.size || 'A4';
   document.getElementById('page-orientation').value = prefill?.page?.orientation || 'portrait';
+  document.getElementById('custom-page-width').value = customWidth;
+  document.getElementById('custom-page-height').value = customHeight;
   document.getElementById('margin-top').value = prefill?.page?.marginTop ?? 5;
   document.getElementById('margin-bottom').value = prefill?.page?.marginBottom ?? 5;
   document.getElementById('margin-left').value = prefill?.page?.marginLeft ?? 5;
@@ -280,12 +299,11 @@ function showSetupView(prefill) {
   document.getElementById('default-font-size').value = prefill?.defaultStyle?.fontSize || 12;
   document.getElementById('default-font-color').value = prefill?.defaultStyle?.color || '#000000';
   document.getElementById('field-names-input').value = (prefill?.fields || []).join('\t');
-  document.getElementById('text-names-input').value = (prefill?.texts || []).join('\t');
   document.getElementById('layout-template').value = 'blank';
   const ftList = document.getElementById('field-type-list');
   if (ftList) ftList.innerHTML = '';
   document.getElementById('parsed-fields-preview').classList.add('hidden');
-  document.getElementById('parsed-texts-preview').classList.add('hidden');
+  toggleSetupCustomSize();
   renderTemplateOptions();
 }
 
@@ -302,10 +320,25 @@ function showSetupStep(n) {
   if (n === 3) renderTemplateOptions();
 }
 
+function toggleSetupCustomSize() {
+  const size = document.getElementById('page-size')?.value || 'A4';
+  document.getElementById('custom-page-size-group')?.classList.toggle('hidden', size !== 'custom');
+}
+
 function createNewLayout() {
   const name = document.getElementById('layout-name').value.trim();
+  const finalName = name || 'Untitled Layout';
+  const existing = loadLayouts();
+  const hasDuplicate = existing.some(l => String(l.name || '').trim().toLowerCase() === finalName.toLowerCase());
+  if (hasDuplicate) {
+    alert(`Layout name "${finalName}" already exists. Please use a unique name.`);
+    document.getElementById('layout-name').focus();
+    return;
+  }
   const size = document.getElementById('page-size').value;
   const orientation = document.getElementById('page-orientation').value;
+  const customWidthMm = Math.max(20, parseFloat(document.getElementById('custom-page-width')?.value) || 210);
+  const customHeightMm = Math.max(20, parseFloat(document.getElementById('custom-page-height')?.value) || 297);
   const marginTop = parseFloat(document.getElementById('margin-top').value) || 5;
   const marginBottom = parseFloat(document.getElementById('margin-bottom').value) || 5;
   const marginLeft = parseFloat(document.getElementById('margin-left').value) || 5;
@@ -321,17 +354,17 @@ function createNewLayout() {
   };
   const fieldText = document.getElementById('field-names-input').value;
   const fields = parseFieldNames(fieldText);
-  const texts = parseFieldNames(document.getElementById('text-names-input').value);
 
   const layout = {
     id: generateId(),
-    name: name || 'Untitled Layout',
+    name: finalName,
     createdAt: new Date().toISOString(),
-    page: { size, orientation, marginTop, marginBottom, marginLeft, marginRight },
+    page: { size, orientation, marginTop, marginBottom, marginLeft, marginRight, customWidthMm, customHeightMm },
     fields,
-    texts,
+    texts: fields.slice(),
     fieldMeta: {},
     defaultStyle,
+    sharedWithUsernames: [],
     elements: [],
   };
   layout.elements = buildTemplateElements(document.getElementById('layout-template').value, layout);
@@ -400,32 +433,26 @@ function classifyLayoutFields(fields) {
   const rules = getSmartRules();
   const buckets = { header: [], table: [], footer: [] };
   sourceFields.forEach(field => {
-    if (matchesSmartRule(field, rules.footer)) {
-      buckets.footer.push(field);
-    } else if (matchesSmartRule(field, rules.table)) {
+    if (matchesSmartRule(field, rules.table)) {
       buckets.table.push(field);
     } else if (matchesSmartRule(field, rules.header)) {
       buckets.header.push(field);
-    } else if (buckets.header.length < 4) {
-      buckets.header.push(field);
-    } else {
-      buckets.table.push(field);
+    } else if (matchesSmartRule(field, rules.footer)) {
+      buckets.footer.push(field);
     }
   });
-
-  if (!buckets.table.length && sourceFields.length > 4) buckets.table = sourceFields.slice(4);
-  if (!buckets.table.length) buckets.table = sourceFields.slice(0, Math.min(4, sourceFields.length));
   return buckets;
 }
 
 function templateContext(fields) {
-  const allFields = fields.length ? fields : ['Customer', 'Date', 'Item', 'Qty', 'Remarks'];
+  const hasInput = (fields || []).length > 0;
+  const allFields = hasInput ? fields : ['Customer', 'Date', 'Item', 'Qty', 'Remarks'];
   const buckets = classifyLayoutFields(allFields);
   return {
     fields: allFields,
-    header: buckets.header.length ? buckets.header : allFields.slice(0, 3),
-    table: buckets.table.length ? buckets.table : allFields.slice(0, 4),
-    footer: buckets.footer.length ? buckets.footer : ['Remarks', 'Signature'],
+    header: hasInput ? buckets.header : (buckets.header.length ? buckets.header : allFields.slice(0, 3)),
+    table: hasInput ? buckets.table : (buckets.table.length ? buckets.table : allFields.slice(0, 4)),
+    footer: hasInput ? buckets.footer : (buckets.footer.length ? buckets.footer : ['Remarks', 'Signature']),
   };
 }
 
@@ -438,24 +465,32 @@ function renderTemplatePreview(templateId) {
     return;
   }
   const pattern = templateId === 'smart' ? smartTemplateKey({ name: document.getElementById('layout-name').value, fields: ctx.fields }) : templateId;
-  const tableLabels = ctx.table.length ? ctx.table : ctx.fields.slice(0, 1);
+  const tableLabels = ctx.table.length ? ctx.table : [];
   const box = (label, left, top, width = 96, height = 11) => `<div class="tpl-box" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px;"><span style="font-size:7px;position:absolute;left:4px;top:2px;">${escapeHtml(label)}</span></div>`;
   const table = (top, rows = 4, left = 16, width = 223) => `
     <table class="tpl-table" style="top:${top}px;left:${left}px;width:${width}px;">
       <tr>${tableLabels.map(l => `<th>${escapeHtml(smartLabel(l))}</th>`).join('')}</tr>
       ${Array.from({ length: rows }).map(() => `<tr>${tableLabels.map(() => '<td>&nbsp;</td>').join('')}</tr>`).join('')}
     </table>`;
+  const tableHtml = (top, rows = 4, left = 16, width = 223) => tableLabels.length ? table(top, rows, left, width) : '';
   let body = '';
   if (pattern === 'layout-1') {
-    body = ctx.header.slice(0, 4).map((l, i) => box(l, 16 + (i % 2) * 112, 46 + Math.floor(i / 2) * 13, 96, 11)).join('') + table(76, 4);
+    body = ctx.header.slice(0, 4).map((l, i) => box(l, 16 + (i % 2) * 112, 46 + Math.floor(i / 2) * 13, 96, 11)).join('') + tableHtml(76, 4);
   } else if (pattern === 'layout-2') {
-    body = ctx.header.slice(0, 3).map((l, i) => box(l, 16 + i * 74, 46, 65, 11)).join('') + table(62, 6);
+    body = ctx.header.slice(0, 3).map((l, i) => box(l, 16 + i * 74, 46, 65, 11)).join('') + tableHtml(62, 6);
   } else if (pattern === 'layout-3') {
-    body = box(ctx.header[0], 16, 46, 104, 11) + box(ctx.header[1] || ctx.header[0], 135, 46, 104, 11) + box(ctx.header[2] || ctx.header[0], 16, 61, 223, 11) + table(78, 4);
+    body = (ctx.header[0] ? box(ctx.header[0], 16, 46, 104, 11) : '') + (ctx.header[1] ? box(ctx.header[1], 135, 46, 104, 11) : '') + (ctx.header[2] ? box(ctx.header[2], 16, 61, 223, 11) : '') + tableHtml(78, 4);
   } else if (pattern === 'layout-4') {
-    body = ctx.header.slice(0, 4).map((l, i) => box(l, 16 + (i % 2) * 112, 46 + Math.floor(i / 2) * 13, 96, 11)).join('') + table(76, 3) + box(ctx.footer[0] || 'Remarks', 16, 118, 223, 20) + box('Signature', 150, 146, 89, 16);
+    const footer = ctx.footer.slice(0, 2);
+    body =
+      ctx.header.slice(0, 4).map((l, i) => box(l, 16 + (i % 2) * 112, 44 + Math.floor(i / 2) * 12, 96, 10)).join('') +
+      tableHtml(70, 3) +
+      (footer[0] ? box(footer[0], 16, 114, 223, 16) : '') +
+      (footer[1] ? box(footer[1], 150, 134, 89, 13) : '');
   } else {
-    body = ctx.fields.slice(0, 8).map((l, i) => box(l, 16 + (i % 2) * 112, 46 + Math.floor(i / 2) * 13, 96, 11)).join('') + box(ctx.footer[0] || 'Remarks', 16, 104, 223, 20) + box('Checked By', 16, 132, 100, 15);
+    body = ctx.header.slice(0, 8).map((l, i) => box(l, 16 + (i % 2) * 112, 46 + Math.floor(i / 2) * 13, 96, 11)).join('') +
+      (ctx.footer[0] ? box(ctx.footer[0], 16, 104, 223, 20) : '') +
+      (ctx.footer[1] ? box(ctx.footer[1], 16, 132, 100, 15) : '');
   }
   preview.innerHTML = `
     <div class="tpl-title">Layout Preview</div>
@@ -469,19 +504,31 @@ function buildTemplateElements(template, layout) {
   if (template === 'blank') return [];
   const fields = layout.fields || [];
   const style = layout.defaultStyle || {};
+  const pageMm = getPageSizeMm(layout.page || { size: 'A4', orientation: 'portrait' });
+  const sx = pageMm.width / 210;
+  const sy = pageMm.height / 297;
+  const sf = Math.max(0.45, Math.min(1, Math.min(sx, sy)));
+  const mx = layout.page?.marginLeft ?? 5;
+  const my = layout.page?.marginTop ?? 5;
+  const contentW = Math.max(80, pageMm.width - (layout.page?.marginLeft ?? 5) - (layout.page?.marginRight ?? 5));
+  const toX = v => +(mx + v * sx).toFixed(2);
+  const toY = v => +(my + v * sy).toFixed(2);
+  const toW = v => +(v * sx).toFixed(2);
+  const toH = v => +(v * sy).toFixed(2);
+  const fs = (value, min = 5) => Math.max(min, +(value * sf).toFixed(2));
   const picked = template === 'smart' ? smartTemplateKey(layout) : template;
   const ctx = templateContext(fields);
   const title = layout.name || 'DOCUMENT';
   const makeId = p => 'el-' + p + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 5);
   const baseStyle = { ...style, backgroundColor: 'transparent', borderWidth: 0, borderColor: '#000000', borderStyle: 'solid', opacity: 1 };
   const elements = [
-    { id: makeId('title'), type: 'text', x: 8, y: 7, width: 120, height: 8, content: title, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 15, fontWeight: 'bold' } },
-    { id: makeId('user'), type: 'user', x: 150, y: 8, width: 45, height: 6, content: '', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 8, textAlign: 'right' } },
-    { id: makeId('line'), type: 'line', x: 8, y: 19, width: 190, height: 2, lineDirection: 'horizontal', style: { ...baseStyle, borderWidth: 1, borderColor: '#000000' } },
+    { id: makeId('title'), type: 'text', x: toX(0), y: toY(0), width: toW(Math.min(120, contentW * 0.63)), height: toH(8), content: title, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: fs(15, 6), fontWeight: 'bold' } },
+    { id: makeId('user'), type: 'user', x: toX(contentW - 45), y: toY(1), width: toW(45), height: toH(6), content: '', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: fs(8, 5), textAlign: 'right' } },
+    { id: makeId('line'), type: 'line', x: toX(0), y: toY(12), width: toW(contentW), height: toH(2), lineDirection: 'horizontal', style: { ...baseStyle, borderWidth: 1, borderColor: '#000000' } },
   ];
   const addPair = (field, x, y, w = 86) => {
-    elements.push({ id: makeId('lbl'), type: 'text', x, y, width: 28, height: 5, content: smartLabel(field), fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5, fontWeight: 'bold' } });
-    elements.push({ id: makeId('fld'), type: 'field', x: x + 29, y, width: w - 29, height: 5, content: '', fieldName: field, imageData: '', style: { ...baseStyle, fontSize: 7.5 } });
+    elements.push({ id: makeId('lbl'), type: 'text', x: toX(x), y: toY(y), width: toW(28), height: toH(5), content: smartLabel(field), fieldName: '', imageData: '', style: { ...baseStyle, fontSize: fs(7.5, 4.5), fontWeight: 'bold' } });
+    elements.push({ id: makeId('fld'), type: 'field', x: toX(x + 29), y: toY(y), width: toW(Math.max(12, w - 29)), height: toH(5), content: '', fieldName: field, imageData: '', style: { ...baseStyle, fontSize: fs(7.5, 4.5) } });
   };
   const addFieldGrid = (fieldList, x, y, cols = 2, colWidth = 95, rowGap = 6, cellWidth = 86) => {
     fieldList.forEach((field, index) => {
@@ -489,43 +536,48 @@ function buildTemplateElements(template, layout) {
     });
     return y + Math.ceil(fieldList.length / cols) * rowGap;
   };
-  const headerFields = picked === 'layout-5' ? ctx.fields : ctx.header;
+  const headerFields = ctx.header;
   const headerCols = picked === 'layout-2' ? 3 : 2;
   const headerColWidth = picked === 'layout-2' ? 64 : 95;
   const headerCellWidth = picked === 'layout-2' ? 58 : 86;
   let headerEndY = 24;
   if (picked === 'layout-2') {
-    headerEndY = addFieldGrid(headerFields, 8, 24, headerCols, headerColWidth, 6, headerCellWidth);
+    headerEndY = addFieldGrid(headerFields, 0, 18, headerCols, headerColWidth, 6, headerCellWidth);
   } else if (picked === 'layout-3') {
-    headerEndY = addFieldGrid(headerFields, 8, 24, 2, 95, 6, 86);
+    headerEndY = addFieldGrid(headerFields, 0, 18, 2, 95, 6, 86);
   } else if (picked === 'layout-4') {
-    headerEndY = addFieldGrid(headerFields, 8, 24, 2, 95, 6, 86);
+    headerEndY = addFieldGrid(headerFields, 0, 18, 2, 95, 6, 86);
   } else {
-    headerEndY = addFieldGrid(headerFields, 8, 24, 2, 95, 6, 86);
+    headerEndY = addFieldGrid(headerFields, 0, 18, 2, 95, 6, 86);
   }
 
   if (picked === 'layout-5') {
-    const remarksY = Math.max(44, headerEndY + 4);
-    elements.push({ id: makeId('remarks'), type: 'rect', x: 8, y: remarksY, width: 190, height: 18, content: '', fieldName: '', imageData: '', style: { ...baseStyle, borderWidth: 1 } });
-    elements.push({ id: makeId('remarkslbl'), type: 'text', x: 10, y: remarksY + 2, width: 60, height: 5, content: smartLabel(ctx.footer[0] || 'Remarks'), fieldName: '', imageData: '', style: { ...baseStyle, fontSize: 7.5, fontWeight: 'bold' } });
+    const remarksY = Math.max(34, headerEndY + 4);
+    if (ctx.footer.length) {
+      elements.push({ id: makeId('remarks'), type: 'rect', x: toX(0), y: toY(remarksY), width: toW(contentW), height: toH(18), content: '', fieldName: '', imageData: '', style: { ...baseStyle, borderWidth: 1 } });
+      elements.push({ id: makeId('remarkslbl'), type: 'text', x: toX(2), y: toY(remarksY + 2), width: toW(60), height: toH(5), content: smartLabel(ctx.footer[0]), fieldName: '', imageData: '', style: { ...baseStyle, fontSize: fs(7.5, 4.5), fontWeight: 'bold' } });
+      elements.push({ id: makeId('remarksfld'), type: 'field', x: toX(2), y: toY(remarksY + 8), width: toW(contentW - 4), height: toH(7), content: '', fieldName: ctx.footer[0], imageData: '', style: { ...baseStyle, fontSize: fs(7.5, 4.5) } });
+    }
     return elements;
   }
 
-  const tableFields = ctx.table.length ? ctx.table : ctx.fields.slice(0, 1);
-  const tableCols = Math.max(1, tableFields.length);
-  const cells = tableFields.flatMap((field, col) => [
-    { row: 0, col, fieldName: '', content: smartLabel(field), style: { fontWeight: 'bold' } },
-    { row: 1, col, fieldName: field, content: '', style: {} },
-  ]);
-  const tableY = Math.max(picked === 'layout-2' ? 34 : (picked === 'layout-3' ? 46 : 40), headerEndY + 4);
-  elements.push({
-    id: makeId('tbl'), type: 'table', x: 8, y: tableY, width: 190, height: 10,
-    content: '', fieldName: '', imageData: '',
-    style: { ...baseStyle, fontSize: tableCols > 6 ? 7 : 8, borderWidth: 1, borderColor: '#000000', borderStyle: 'solid' },
-    table: { rows: 2, cols: tableCols, cells, theme: 'plain', borderMode: 'all', colWidths: Array(tableCols).fill(1), rowHeights: [5, 5], detailMode: true, colProps: [] },
-  });
+  const tableFields = ctx.table;
+  const tableY = Math.max(picked === 'layout-2' ? 28 : (picked === 'layout-3' ? 36 : 32), headerEndY + 4);
+  if (tableFields.length) {
+    const tableCols = tableFields.length;
+    const cells = tableFields.flatMap((field, col) => [
+      { row: 0, col, fieldName: '', content: smartLabel(field), style: { fontWeight: 'bold' } },
+      { row: 1, col, fieldName: field, content: '', style: {} },
+    ]);
+    elements.push({
+      id: makeId('tbl'), type: 'table', x: toX(0), y: toY(tableY), width: toW(contentW), height: toH(10),
+      content: '', fieldName: '', imageData: '',
+      style: { ...baseStyle, fontSize: fs(tableCols > 6 ? 7 : 8, 4.5), borderWidth: 1, borderColor: '#000000', borderStyle: 'solid' },
+      table: { rows: 2, cols: tableCols, cells, theme: 'plain', borderMode: 'all', colWidths: Array(tableCols).fill(1), rowHeights: [5, 5], detailMode: true, colProps: [] },
+    });
+  }
   if (ctx.footer.length) {
-    addFieldGrid(ctx.footer, 8, tableY + 16, 2, 95, 6, 86);
+    addFieldGrid(ctx.footer, 0, (tableFields.length ? tableY + 16 : Math.max(headerEndY + 6, 48)), 2, 95, 6, 86);
   }
   return elements;
 }
@@ -704,6 +756,68 @@ function renderParsedPreview(data, fields) {
   }
 }
 
+async function shareLayoutToUser(layoutId, enteredUserId) {
+  const current = getCurrentUser();
+  if (!(current?.role === 'designer' || current?.role === 'super')) {
+    return { ok: false, message: 'Only designer or super user can share layouts.' };
+  }
+
+  const source = getLayoutById(layoutId);
+  if (!source) {
+    return { ok: false, message: 'Layout not found.' };
+  }
+
+  const targetUsername = String(enteredUserId || '').trim().toUpperCase();
+  if (!targetUsername) return { ok: false, message: 'Enter user id.' };
+
+  try {
+    const targetUser = await window.AuthStore?.findUser?.(targetUsername);
+    if (!targetUser) {
+      return { ok: false, message: 'Invalid user id.' };
+    }
+
+    const copy = JSON.parse(JSON.stringify(source));
+    copy.id = generateId();
+    copy.createdAt = new Date().toISOString();
+    copy.updatedAt = new Date().toISOString();
+    copy.userId = targetUser.id;
+    copy.username = targetUser.username;
+    delete copy.sharedWithUsernames;
+
+    const result = await window.LayoutStore?.saveForUser?.(copy, targetUser);
+    if (!result?.ok) throw (result?.error || new Error('Could not share layout.'));
+    return { ok: true, message: `Layout shared to ${targetUser.username}.` };
+  } catch (err) {
+    return { ok: false, message: err.message || 'Could not share layout.' };
+  }
+}
+
+function setShareLayoutTab(tabName) {
+  document.querySelectorAll('.modal-tab[data-share-tab]').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.shareTab === tabName);
+  });
+  document.getElementById('share-layout-tab-share')?.classList.toggle('active', tabName === 'share');
+  document.getElementById('share-layout-tab-download')?.classList.toggle('active', tabName === 'download');
+  document.getElementById('btn-share-layout-send')?.classList.toggle('hidden', tabName !== 'share');
+  document.getElementById('btn-share-layout-download')?.classList.toggle('hidden', tabName !== 'download');
+}
+
+function closeShareLayoutModal() {
+  document.getElementById('modal-share-layout')?.classList.add('hidden');
+  shareLayoutModalId = null;
+}
+
+function openShareLayoutModal(layoutId) {
+  shareLayoutModalId = layoutId;
+  document.getElementById('share-layout-user-id').value = '';
+  document.getElementById('share-layout-error')?.classList.add('hidden');
+  const user = getCurrentUser();
+  const canShare = user?.role === 'designer' || user?.role === 'super';
+  document.getElementById('tab-share-layout-share')?.classList.toggle('hidden', !canShare);
+  setShareLayoutTab(canShare ? 'share' : 'download');
+  document.getElementById('modal-share-layout')?.classList.remove('hidden');
+}
+
 // ===== Event wiring =====
 function initHomeEvents() {
   document.getElementById('btn-logout').addEventListener('click', () => {
@@ -712,6 +826,8 @@ function initHomeEvents() {
       designerInstance = null;
     }
     if (window.AuthStore) window.AuthStore.logout();
+    currentSessionPassword = '';
+    selectedManagedUser = null;
     showLoginView();
   });
 
@@ -748,10 +864,10 @@ function initHomeEvents() {
         return;
       }
       openDesigner(id);
+    } else if (action === 'share') {
+      openShareLayoutModal(id);
     } else if (action === 'run') {
       openRunView(id);
-    } else if (action === 'export') {
-      exportLayout(id);
     } else if (action === 'delete') {
       if (confirm('Delete this layout? This cannot be undone.')) {
         deleteLayout(id);
@@ -761,8 +877,45 @@ function initHomeEvents() {
   });
 }
 
+function initShareLayoutEvents() {
+  document.querySelectorAll('.modal-tab[data-share-tab]').forEach(tab => {
+    tab.addEventListener('click', () => setShareLayoutTab(tab.dataset.shareTab));
+  });
+
+  document.getElementById('btn-share-layout-close')?.addEventListener('click', closeShareLayoutModal);
+  document.getElementById('btn-share-layout-cancel')?.addEventListener('click', closeShareLayoutModal);
+  document.getElementById('modal-share-layout')?.addEventListener('click', (e) => {
+    if (e.target === document.getElementById('modal-share-layout')) closeShareLayoutModal();
+  });
+
+  document.getElementById('btn-share-layout-download')?.addEventListener('click', () => {
+    if (!shareLayoutModalId) return;
+    exportLayout(shareLayoutModalId);
+    closeShareLayoutModal();
+  });
+
+  document.getElementById('btn-share-layout-send')?.addEventListener('click', async () => {
+    if (!shareLayoutModalId) return;
+    const userId = document.getElementById('share-layout-user-id')?.value || '';
+    const btn = document.getElementById('btn-share-layout-send');
+    const error = document.getElementById('share-layout-error');
+    btn.disabled = true;
+    btn.textContent = 'Sharing...';
+    const result = await shareLayoutToUser(shareLayoutModalId, userId);
+    btn.disabled = false;
+    btn.textContent = 'Share Layout';
+    if (!result.ok) {
+      error.textContent = result.message || 'Could not share layout.';
+      error.classList.remove('hidden');
+      return;
+    }
+    showToast(result.message || 'Layout shared.');
+    closeShareLayoutModal();
+  });
+}
+
 function initLoginEvents() {
-  ['login-user-id','new-user-id','reset-user-id','status-user-id'].forEach(id => {
+  ['login-user-id', 'new-user-id', 'share-layout-user-id'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', (e) => {
       const pos = e.target.selectionStart;
       e.target.value = e.target.value.toUpperCase();
@@ -783,6 +936,7 @@ function initLoginEvents() {
 
     try {
       await window.AuthStore.login(username, password);
+      currentSessionPassword = password;
       document.getElementById('login-password').value = '';
       await loadCurrentUserLayouts();
       const livePreviewId = new URLSearchParams(window.location.search).get('livepreview');
@@ -802,56 +956,188 @@ function initLoginEvents() {
 }
 
 function openAddUserModal() {
+  const current = getCurrentUser();
+  if (!current?.isSuperUser) {
+    alert('Only the super user can maintain users.');
+    return;
+  }
+  selectedManagedUser = null;
+  document.getElementById('users-directory-body').innerHTML = '<tr><td colspan="5" class="hint">Loading users...</td></tr>';
   document.getElementById('new-user-id').value = '';
+  document.getElementById('new-user-name').value = '';
   document.getElementById('new-user-role').value = 'user';
   document.getElementById('new-user-active').value = 'true';
   document.getElementById('new-user-password').value = '';
-  document.getElementById('admin-password-confirm').value = '';
-  document.getElementById('reset-user-id').value = '';
-  document.getElementById('reset-user-password').value = '';
-  document.getElementById('reset-admin-password-confirm').value = '';
-  document.getElementById('status-user-id').value = '';
-  document.getElementById('status-user-active').value = 'true';
-  document.getElementById('status-admin-password-confirm').value = '';
+  document.getElementById('users-directory-error').classList.add('hidden');
   document.getElementById('add-user-error').classList.add('hidden');
-  document.getElementById('reset-user-error').classList.add('hidden');
-  document.getElementById('status-user-error').classList.add('hidden');
-  setUserModalTab('create');
+  document.getElementById('change-user-error')?.classList.add('hidden');
   document.getElementById('modal-add-user').classList.remove('hidden');
+  refreshUsersDirectory();
 }
 
 function closeAddUserModal() {
   document.getElementById('modal-add-user').classList.add('hidden');
 }
 
-function setUserModalTab(tabName) {
-  document.querySelectorAll('.modal-tab[data-user-tab]').forEach(tab => {
-    tab.classList.toggle('active', tab.dataset.userTab === tabName);
-  });
-  document.querySelectorAll('.user-tab-content').forEach(content => content.classList.remove('active'));
-  document.getElementById('user-tab-' + tabName)?.classList.add('active');
-  document.getElementById('btn-add-user-save')?.classList.toggle('hidden', tabName !== 'create');
-  document.getElementById('btn-reset-user-password')?.classList.toggle('hidden', tabName !== 'reset');
-  document.getElementById('btn-update-user-status')?.classList.toggle('hidden', tabName !== 'status');
+function openCreateUserModal() {
+  document.getElementById('add-user-error').classList.add('hidden');
+  document.getElementById('modal-create-user').classList.remove('hidden');
+}
+
+function closeCreateUserModal() {
+  document.getElementById('modal-create-user').classList.add('hidden');
+}
+
+function openChangeUserModal(user) {
+  if (!user) return;
+  document.getElementById('change-user-id').value = user.username || '';
+  document.getElementById('change-user-password').value = '';
+  document.getElementById('change-user-active').value = user.active ? 'true' : 'false';
+  document.getElementById('change-user-error').classList.add('hidden');
+  document.getElementById('modal-change-user').classList.remove('hidden');
+}
+
+function closeChangeUserModal() {
+  document.getElementById('modal-change-user').classList.add('hidden');
+}
+
+function formatLastLogin(lastLoginAt) {
+  if (!lastLoginAt) return 'Never';
+  try {
+    return new Date(lastLoginAt).toLocaleString();
+  } catch {
+    return String(lastLoginAt);
+  }
+}
+
+function renderUsersDirectory(users) {
+  const body = document.getElementById('users-directory-body');
+  if (!body) return;
+  const items = Array.isArray(users) ? users : [];
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="5" class="hint">No users found.</td></tr>';
+    selectedManagedUser = null;
+    return;
+  }
+  body.innerHTML = items.map(user => `
+    <tr data-user-id="${escapeHtml(user.id || '')}" class="${selectedManagedUser?.id === user.id ? 'selected' : ''}">
+      <td>${escapeHtml(user.username || '')}</td>
+      <td>${escapeHtml(user.fullName || '-')}</td>
+      <td>${escapeHtml(smartLabel(user.role || 'user'))}</td>
+      <td>${escapeHtml(formatLastLogin(user.lastLoginAt))}</td>
+      <td><span class="user-status-pill ${user.active ? 'active' : 'inactive'}">${user.active ? 'Active' : 'Inactive'}</span></td>
+    </tr>
+  `).join('');
+}
+
+async function refreshUsersDirectory() {
+  const current = getCurrentUser();
+  const error = document.getElementById('users-directory-error');
+  const btn = document.getElementById('btn-list-users');
+  error.classList.add('hidden');
+
+  if (!current?.isSuperUser) {
+    error.textContent = 'Only the super user can view users.';
+    error.classList.remove('hidden');
+    return;
+  }
+  if (!currentSessionPassword) {
+    error.textContent = 'Session expired. Please sign in again.';
+    error.classList.remove('hidden');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Loading...';
+  try {
+    const users = await window.AuthStore.listUsers(current.username, currentSessionPassword);
+    users.sort((a, b) => String(a.username || '').localeCompare(String(b.username || '')));
+    if (selectedManagedUser?.id) {
+      selectedManagedUser = users.find(u => u.id === selectedManagedUser.id) || null;
+    }
+    renderUsersDirectory(users);
+  } catch (err) {
+    error.textContent = err.message || 'Could not load users.';
+    error.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Refresh';
+  }
 }
 
 function initAddUserEvents() {
-  document.querySelectorAll('.modal-tab[data-user-tab]').forEach(tab => {
-    tab.addEventListener('click', () => setUserModalTab(tab.dataset.userTab));
-  });
-
   document.getElementById('btn-add-user-close').addEventListener('click', closeAddUserModal);
   document.getElementById('btn-add-user-cancel').addEventListener('click', closeAddUserModal);
   document.getElementById('modal-add-user').addEventListener('click', (e) => {
     if (e.target === document.getElementById('modal-add-user')) closeAddUserModal();
   });
+  document.getElementById('btn-user-add').addEventListener('click', openCreateUserModal);
+  document.getElementById('btn-list-users').addEventListener('click', refreshUsersDirectory);
+
+  document.getElementById('btn-create-user-close').addEventListener('click', closeCreateUserModal);
+  document.getElementById('btn-create-user-cancel').addEventListener('click', closeCreateUserModal);
+  document.getElementById('modal-create-user').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('modal-create-user')) closeCreateUserModal();
+  });
+  document.getElementById('users-directory-body').addEventListener('click', (e) => {
+    const row = e.target.closest('tr[data-user-id]');
+    if (!row) return;
+    const id = row.dataset.userId;
+    const rows = Array.from(document.querySelectorAll('#users-directory-body tr[data-user-id]'));
+    rows.forEach(r => r.classList.toggle('selected', r === row));
+    selectedManagedUser = {
+      ...(selectedManagedUser || {}),
+      id,
+      username: row.children[0]?.textContent?.trim() || '',
+      active: (row.children[4]?.textContent || '').trim().toLowerCase() === 'active',
+    };
+  });
+
+  document.getElementById('btn-user-change').addEventListener('click', () => {
+    if (!selectedManagedUser?.username) {
+      alert('Select a user first.');
+      return;
+    }
+    openChangeUserModal(selectedManagedUser);
+  });
+
+  document.getElementById('btn-user-delete').addEventListener('click', async () => {
+    const current = getCurrentUser();
+    const error = document.getElementById('users-directory-error');
+    error.classList.add('hidden');
+
+    if (!selectedManagedUser?.username) {
+      alert('Select a user first.');
+      return;
+    }
+    if (!currentSessionPassword) {
+      error.textContent = 'Session expired. Please sign in again.';
+      error.classList.remove('hidden');
+      return;
+    }
+    if (selectedManagedUser.username === current?.username) {
+      alert('You cannot delete your own user id.');
+      return;
+    }
+    if (!confirm(`Delete user "${selectedManagedUser.username}"?`)) return;
+
+    try {
+      await window.AuthStore.deleteUser(current.username, currentSessionPassword, selectedManagedUser.username);
+      showToast(`User "${selectedManagedUser.username}" deleted.`);
+      selectedManagedUser = null;
+      await refreshUsersDirectory();
+    } catch (err) {
+      error.textContent = err.message || 'Could not delete user.';
+      error.classList.remove('hidden');
+    }
+  });
 
   document.getElementById('btn-add-user-save').addEventListener('click', async () => {
     const current = getCurrentUser();
     const username = document.getElementById('new-user-id').value.trim().toUpperCase();
+    const fullName = document.getElementById('new-user-name').value.trim();
     const password = document.getElementById('new-user-password').value;
     const role = document.getElementById('new-user-role').value || 'user';
-    const adminPassword = document.getElementById('admin-password-confirm').value;
     const error = document.getElementById('add-user-error');
     const btn = document.getElementById('btn-add-user-save');
 
@@ -862,8 +1148,13 @@ function initAddUserEvents() {
       error.classList.remove('hidden');
       return;
     }
-    if (!username || !password || !adminPassword) {
-      error.textContent = 'Enter user id, password, and your super user password.';
+    if (!currentSessionPassword) {
+      error.textContent = 'Session expired. Please sign in again.';
+      error.classList.remove('hidden');
+      return;
+    }
+    if (!username || !fullName || !password) {
+      error.textContent = 'Enter user id, user name, and password.';
       error.classList.remove('hidden');
       return;
     }
@@ -871,12 +1162,16 @@ function initAddUserEvents() {
     btn.disabled = true;
     btn.textContent = 'Creating...';
     try {
-      await window.AuthStore.addUser(current.username, adminPassword, username, password, role);
+      await window.AuthStore.addUser(current.username, currentSessionPassword, username, fullName, password, role);
       if (document.getElementById('new-user-active').value === 'false') {
-        await window.AuthStore.setUserActive(current.username, adminPassword, username, false);
+        await window.AuthStore.setUserActive(current.username, currentSessionPassword, username, false);
       }
-      closeAddUserModal();
+      document.getElementById('new-user-id').value = '';
+      document.getElementById('new-user-name').value = '';
+      document.getElementById('new-user-password').value = '';
       showToast(`User "${username}" created.`);
+      closeCreateUserModal();
+      await refreshUsersDirectory();
     } catch (err) {
       error.textContent = err.message || 'Could not create user.';
       error.classList.remove('hidden');
@@ -886,76 +1181,63 @@ function initAddUserEvents() {
     }
   });
 
-  document.getElementById('btn-reset-user-password').addEventListener('click', async () => {
+  document.getElementById('btn-change-user-close').addEventListener('click', closeChangeUserModal);
+  document.getElementById('btn-change-user-cancel').addEventListener('click', closeChangeUserModal);
+  document.getElementById('modal-change-user').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('modal-change-user')) closeChangeUserModal();
+  });
+
+  document.getElementById('btn-change-user-save').addEventListener('click', async () => {
     const current = getCurrentUser();
-    const username = document.getElementById('reset-user-id').value.trim().toUpperCase();
-    const newPassword = document.getElementById('reset-user-password').value;
-    const adminPassword = document.getElementById('reset-admin-password-confirm').value;
-    const error = document.getElementById('reset-user-error');
-    const btn = document.getElementById('btn-reset-user-password');
+    const username = document.getElementById('change-user-id').value.trim().toUpperCase();
+    const newPassword = document.getElementById('change-user-password').value;
+    const active = document.getElementById('change-user-active').value === 'true';
+    const error = document.getElementById('change-user-error');
+    const btn = document.getElementById('btn-change-user-save');
 
     error.classList.add('hidden');
 
     if (!current?.isSuperUser) {
-      error.textContent = 'Only the super user can reset passwords.';
+      error.textContent = 'Only the super user can change passwords.';
       error.classList.remove('hidden');
       return;
     }
-    if (!username || !newPassword || !adminPassword) {
-      error.textContent = 'Enter user id, new password, and your super user password.';
+    if (!currentSessionPassword) {
+      error.textContent = 'Session expired. Please sign in again.';
+      error.classList.remove('hidden');
+      return;
+    }
+    const statusChanged = selectedManagedUser && (Boolean(selectedManagedUser.active) !== active);
+    if (!username) {
+      error.textContent = 'Invalid user selected.';
+      error.classList.remove('hidden');
+      return;
+    }
+    if (!newPassword && !statusChanged) {
+      error.textContent = 'Change password or update status.';
       error.classList.remove('hidden');
       return;
     }
 
     btn.disabled = true;
-    btn.textContent = 'Resetting...';
+    btn.textContent = 'Saving...';
     try {
-      await window.AuthStore.resetPassword(current.username, adminPassword, username, newPassword);
-      document.getElementById('reset-user-id').value = '';
-      document.getElementById('reset-user-password').value = '';
-      document.getElementById('reset-admin-password-confirm').value = '';
-      showToast(`Password reset for "${username}".`);
+      if (newPassword) {
+        await window.AuthStore.resetPassword(current.username, currentSessionPassword, username, newPassword);
+      }
+      if (statusChanged) {
+        await window.AuthStore.setUserActive(current.username, currentSessionPassword, username, active);
+      }
+      document.getElementById('change-user-password').value = '';
+      showToast(`User "${username}" updated.`);
+      closeChangeUserModal();
+      await refreshUsersDirectory();
     } catch (err) {
       error.textContent = err.message || 'Could not reset password.';
       error.classList.remove('hidden');
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Reset Password';
-    }
-  });
-
-  document.getElementById('btn-update-user-status').addEventListener('click', async () => {
-    const current = getCurrentUser();
-    const username = document.getElementById('status-user-id').value.trim().toUpperCase();
-    const active = document.getElementById('status-user-active').value === 'true';
-    const adminPassword = document.getElementById('status-admin-password-confirm').value;
-    const error = document.getElementById('status-user-error');
-    const btn = document.getElementById('btn-update-user-status');
-
-    error.classList.add('hidden');
-
-    if (!current?.isSuperUser) {
-      error.textContent = 'Only the super user can update user status.';
-      error.classList.remove('hidden');
-      return;
-    }
-    if (!username || !adminPassword) {
-      error.textContent = 'Enter user id and your super user password.';
-      error.classList.remove('hidden');
-      return;
-    }
-
-    btn.disabled = true;
-    btn.textContent = 'Updating...';
-    try {
-      await window.AuthStore.setUserActive(current.username, adminPassword, username, active);
-      showToast(`User "${username}" ${active ? 'activated' : 'deactivated'}.`);
-    } catch (err) {
-      error.textContent = err.message || 'Could not update user status.';
-      error.classList.remove('hidden');
-    } finally {
-      btn.disabled = false;
-      btn.textContent = 'Update Status';
+      btn.textContent = 'Save';
     }
   });
 }
@@ -1090,11 +1372,11 @@ function initSmartUiEvents() {
 }
 
 function initSetupEvents() {
-  document.querySelectorAll('.setup-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.setup-tab').forEach(t => t.classList.toggle('active', t === tab));
-      document.querySelectorAll('.setup-tab-content').forEach(c => c.classList.remove('active'));
-      document.getElementById('setup-tab-' + tab.dataset.setupTab)?.classList.add('active');
+  document.getElementById('page-size')?.addEventListener('change', toggleSetupCustomSize);
+  ['custom-page-width', 'custom-page-height'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', () => {
+      if (document.getElementById('page-size')?.value !== 'custom') return;
+      renderTemplatePreview(document.getElementById('layout-template')?.value || 'blank');
     });
   });
 
@@ -1140,18 +1422,6 @@ function initSetupEvents() {
       preview.classList.add('hidden');
       preview.innerHTML = '';
       renderTemplatePreview(document.getElementById('layout-template')?.value || 'blank');
-    }
-  });
-
-  document.getElementById('text-names-input').addEventListener('input', () => {
-    const texts = parseFieldNames(document.getElementById('text-names-input').value);
-    const preview = document.getElementById('parsed-texts-preview');
-    if (texts.length > 0) {
-      preview.classList.remove('hidden');
-      preview.innerHTML = `<label>Parsed Text:</label><div class="parsed-fields-list">${texts.map(t => `<span>${escapeHtml(t)}</span>`).join('')}</div>`;
-    } else {
-      preview.classList.add('hidden');
-      preview.innerHTML = '';
     }
   });
 }
@@ -1226,6 +1496,9 @@ function initDesignerAppEvents() {
   // Page settings modal
   document.getElementById('btn-page-settings-close').addEventListener('click', closePageSettingsModal);
   document.getElementById('btn-page-settings-cancel').addEventListener('click', closePageSettingsModal);
+  document.getElementById('modal-page-size')?.addEventListener('change', (e) => {
+    document.getElementById('modal-custom-size-group')?.classList.toggle('hidden', e.target.value !== 'custom');
+  });
   document.getElementById('btn-page-settings-apply').addEventListener('click', () => {
     if (designerInstance) designerInstance.applyPageSettings();
   });
@@ -1685,6 +1958,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initRunPreviewModalEvents();
   initAddUserEvents();
   initSmartUiEvents();
+  initShareLayoutEvents();
 
   // Check if this tab is opened as a live preview
   const urlParams = new URLSearchParams(window.location.search);

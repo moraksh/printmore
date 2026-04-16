@@ -660,7 +660,14 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
 async function generatePDF(layout, fieldValues, detailRows) {
   const page = layout.page;
   const sizes = window.PAGE_SIZES;
-  let { width: wMm, height: hMm } = sizes[page.size] || sizes['A4'];
+  let wMm;
+  let hMm;
+  if (page.size === 'custom') {
+    wMm = Math.max(20, parseFloat(page.customWidthMm ?? page.customWidth) || 210);
+    hMm = Math.max(20, parseFloat(page.customHeightMm ?? page.customHeight) || 297);
+  } else {
+    ({ width: wMm, height: hMm } = sizes[page.size] || sizes['A4']);
+  }
   if (page.orientation === 'landscape') [wMm, hMm] = [hMm, wMm];
   const scale = PDF_MM_TO_PX;
 
@@ -838,7 +845,14 @@ async function generatePDF(layout, fieldValues, detailRows) {
 async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl) {
   const page = layout.page;
   const sizes = window.PAGE_SIZES;
-  let { width: wMm, height: hMm } = sizes[page.size] || sizes['A4'];
+  let wMm;
+  let hMm;
+  if (page.size === 'custom') {
+    wMm = Math.max(20, parseFloat(page.customWidthMm ?? page.customWidth) || 210);
+    hMm = Math.max(20, parseFloat(page.customHeightMm ?? page.customHeight) || 297);
+  } else {
+    ({ width: wMm, height: hMm } = sizes[page.size] || sizes['A4']);
+  }
   if (page.orientation === 'landscape') [wMm, hMm] = [hMm, wMm];
 
   // Scale to fit container width with a little padding

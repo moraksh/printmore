@@ -1125,6 +1125,19 @@ textarea { resize: vertical; }
 .modal-box-sm {
   width: 420px;
 }
+.modal-box-sm .modal-body {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.modal-box-full {
+  height: 88vh;
+  max-width: 1100px;
+  width: 94vw;
+}
+.modal-box-full .modal-body {
+  min-height: 0;
+  overflow: hidden;
+}
 .modal-header {
   display: flex;
   align-items: center;
@@ -1172,6 +1185,63 @@ textarea { resize: vertical; }
 .smart-tab-content { display: none; flex-direction: column; gap: 16px; }
 .user-tab-content.active,
 .smart-tab-content.active { display: flex; }
+.user-directory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.user-directory-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.user-directory-table {
+  border-collapse: collapse;
+  min-width: 100%;
+  width: 100%;
+}
+.user-directory-table th,
+.user-directory-table td {
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  padding: 7px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+.user-directory-table th {
+  background: var(--bg-active);
+  color: var(--text-primary);
+  font-weight: 700;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.user-directory-table tr:last-child td {
+  border-bottom: none;
+}
+.user-directory-table tbody tr {
+  cursor: pointer;
+}
+.user-directory-table tbody tr.selected td {
+  background: rgba(45, 140, 255, 0.15);
+}
+.user-status-pill {
+  border-radius: var(--radius-sm);
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+}
+.user-status-pill.active {
+  background: rgba(46, 204, 113, 0.15);
+  color: #7be0a8;
+}
+.user-status-pill.inactive {
+  background: rgba(255, 71, 87, 0.15);
+  color: #ff9aa4;
+}
 .smart-rule-entry {
   display: grid;
   grid-template-columns: 1fr auto;

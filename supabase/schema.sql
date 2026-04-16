@@ -3,10 +3,12 @@ create extension if not exists pgcrypto;
 create table if not exists public.printmore_users (
   id uuid primary key default gen_random_uuid(),
   username text not null unique,
+  full_name text not null default '',
   password text not null,
   role text not null default 'user' check (role in ('user', 'designer', 'super')),
   active boolean not null default true,
   is_super_user boolean not null default false,
+  last_login_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -21,12 +23,21 @@ add column if not exists role text not null default 'user';
 alter table public.printmore_users
 add column if not exists active boolean not null default true;
 
+alter table public.printmore_users
+add column if not exists full_name text not null default '';
+
+alter table public.printmore_users
+add column if not exists last_login_at timestamptz;
+
 update public.printmore_users
 set password = 'More400'
 where lower(username) = 'moraksh';
 
 update public.printmore_users
 set username = upper(username);
+
+update public.printmore_users
+set full_name = coalesce(nullif(trim(full_name), ''), username);
 
 update public.printmore_users
 set password = 'changeme'
@@ -38,10 +49,11 @@ alter column password set not null;
 alter table public.printmore_users
 drop column if exists password_hash;
 
-insert into public.printmore_users (username, password, role, active, is_super_user)
-values ('MORAKSH', 'More400', 'super', true, true)
+insert into public.printmore_users (username, full_name, password, role, active, is_super_user)
+values ('MORAKSH', 'Akshay More', 'More400', 'super', true, true)
 on conflict (username) do update
 set password = excluded.password,
+    full_name = 'Akshay More',
     role = 'super',
     active = true,
     is_super_user = true;
@@ -131,34 +143,51 @@ with check (true);
 drop function if exists public.authenticate_printmore_user(text, text);
 drop function if exists public.create_printmore_user(text, text, text, text);
 drop function if exists public.create_printmore_user(text, text, text, text, text);
+drop function if exists public.create_printmore_user(text, text, text, text, text, text);
 drop function if exists public.reset_printmore_user_password(text, text, text, text);
 drop function if exists public.set_printmore_user_active(text, text, text, boolean);
+drop function if exists public.update_printmore_user(text, text, text, text, boolean);
+drop function if exists public.find_printmore_user(text);
+drop function if exists public.list_printmore_users(text, text);
+drop function if exists public.delete_printmore_user(text, text, text);
 
 create or replace function public.authenticate_printmore_user(
   p_username text,
   p_password text
 )
-returns table(id uuid, username text, role text, is_super_user boolean)
-language sql
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
+language plpgsql
 security definer
 set search_path = public
 as $$
-  select u.id, upper(u.username), u.role, u.is_super_user
-  from public.printmore_users u
+declare
+  v_user public.printmore_users;
+begin
+  update public.printmore_users u
+  set last_login_at = now()
   where lower(u.username) = lower(trim(p_username))
     and u.password = p_password
     and u.active = true
-  limit 1;
+  returning * into v_user;
+
+  if v_user.id is null then
+    return;
+  end if;
+
+  return query
+  select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user;
+end;
 $$;
 
 create or replace function public.create_printmore_user(
   p_admin_username text,
   p_admin_password text,
   p_username text,
+  p_full_name text,
   p_password text,
   p_role text default 'user'
 )
-returns table(id uuid, username text, role text, is_super_user boolean)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
 language plpgsql
 security definer
 set search_path = public
@@ -166,6 +195,7 @@ as $$
 declare
   v_admin public.printmore_users;
   v_user public.printmore_users;
+  v_target_id uuid;
 begin
   select *
   into v_admin
@@ -183,11 +213,18 @@ begin
     raise exception 'User id and password are required.';
   end if;
 
-  insert into public.printmore_users (username, password, role, active, is_super_user)
-  values (upper(trim(p_username)), p_password, coalesce(nullif(p_role, ''), 'user'), true, coalesce(nullif(p_role, ''), 'user') = 'super')
+  insert into public.printmore_users (username, full_name, password, role, active, is_super_user)
+  values (
+    upper(trim(p_username)),
+    coalesce(nullif(trim(p_full_name), ''), upper(trim(p_username))),
+    p_password,
+    coalesce(nullif(p_role, ''), 'user'),
+    true,
+    coalesce(nullif(p_role, ''), 'user') = 'super'
+  )
   returning * into v_user;
 
-  return query select v_user.id, upper(v_user.username), v_user.role, v_user.is_super_user;
+  return query select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user;
 end;
 $$;
 
@@ -197,7 +234,7 @@ create or replace function public.reset_printmore_user_password(
   p_username text,
   p_new_password text
 )
-returns table(id uuid, username text, role text, is_super_user boolean)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
 language plpgsql
 security definer
 set search_path = public
@@ -205,6 +242,7 @@ as $$
 declare
   v_admin public.printmore_users;
   v_user public.printmore_users;
+  v_target_id uuid;
 begin
   select *
   into v_admin
@@ -222,16 +260,24 @@ begin
     raise exception 'User id and new password are required.';
   end if;
 
+  select u.id
+  into v_target_id
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_username))
+     or lower(u.full_name) = lower(trim(p_username))
+  order by case when lower(u.username) = lower(trim(p_username)) then 0 else 1 end
+  limit 1;
+
   update public.printmore_users u
   set password = p_new_password
-  where lower(u.username) = lower(trim(p_username))
+  where u.id = v_target_id
   returning * into v_user;
 
   if v_user.id is null then
     raise exception 'User id not found.';
   end if;
 
-  return query select v_user.id, upper(v_user.username), v_user.role, v_user.is_super_user;
+  return query select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user;
 end;
 $$;
 
@@ -241,7 +287,7 @@ create or replace function public.set_printmore_user_active(
   p_username text,
   p_active boolean
 )
-returns table(id uuid, username text, role text, is_super_user boolean)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
 language plpgsql
 security definer
 set search_path = public
@@ -249,6 +295,7 @@ as $$
 declare
   v_admin public.printmore_users;
   v_user public.printmore_users;
+  v_target_id uuid;
 begin
   select *
   into v_admin
@@ -262,20 +309,192 @@ begin
     raise exception 'Invalid super user password.';
   end if;
 
+  select u.id
+  into v_target_id
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_username))
+     or lower(u.full_name) = lower(trim(p_username))
+  order by case when lower(u.username) = lower(trim(p_username)) then 0 else 1 end
+  limit 1;
+
   update public.printmore_users u
   set active = p_active
-  where lower(u.username) = lower(trim(p_username))
+  where u.id = v_target_id
   returning * into v_user;
 
   if v_user.id is null then
     raise exception 'User id not found.';
   end if;
 
-  return query select v_user.id, upper(v_user.username), v_user.role, v_user.is_super_user;
+  return query select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user;
+end;
+$$;
+
+create or replace function public.update_printmore_user(
+  p_admin_username text,
+  p_admin_password text,
+  p_username text,
+  p_role text,
+  p_active boolean
+)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_admin public.printmore_users;
+  v_user public.printmore_users;
+  v_role text;
+  v_target_id uuid;
+begin
+  select *
+  into v_admin
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_admin_username))
+    and u.password = p_admin_password
+    and u.is_super_user = true
+  limit 1;
+
+  if v_admin.id is null then
+    raise exception 'Invalid super user password.';
+  end if;
+
+  v_role := coalesce(nullif(trim(p_role), ''), 'user');
+
+  select u.id
+  into v_target_id
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_username))
+     or lower(u.full_name) = lower(trim(p_username))
+  order by case when lower(u.username) = lower(trim(p_username)) then 0 else 1 end
+  limit 1;
+
+  update public.printmore_users u
+  set role = v_role,
+      is_super_user = (v_role = 'super'),
+      active = p_active
+  where u.id = v_target_id
+  returning * into v_user;
+
+  if v_user.id is null then
+    raise exception 'User id not found.';
+  end if;
+
+  return query select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user;
+end;
+$$;
+
+create or replace function public.find_printmore_user(
+  p_username text
+)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
+language sql
+security definer
+set search_path = public
+as $$
+  select u.id, upper(u.username), u.full_name, u.role, u.is_super_user
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_username))
+    and u.active = true
+  limit 1;
+$$;
+
+create or replace function public.list_printmore_users(
+  p_admin_username text,
+  p_admin_password text
+)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean, active boolean, last_login_at timestamptz)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_admin public.printmore_users;
+begin
+  select *
+  into v_admin
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_admin_username))
+    and u.password = p_admin_password
+    and u.is_super_user = true
+  limit 1;
+
+  if v_admin.id is null then
+    raise exception 'Invalid super user password.';
+  end if;
+
+  return query
+  select
+    u.id,
+    upper(u.username),
+    u.full_name,
+    u.role,
+    u.is_super_user,
+    u.active,
+    u.last_login_at
+  from public.printmore_users u
+  order by upper(u.username);
+end;
+$$;
+
+create or replace function public.delete_printmore_user(
+  p_admin_username text,
+  p_admin_password text,
+  p_username text
+)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_admin public.printmore_users;
+  v_user public.printmore_users;
+  v_target_id uuid;
+begin
+  select *
+  into v_admin
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_admin_username))
+    and u.password = p_admin_password
+    and u.is_super_user = true
+  limit 1;
+
+  if v_admin.id is null then
+    raise exception 'Invalid super user password.';
+  end if;
+
+  select u.id
+  into v_target_id
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_username))
+     or lower(u.full_name) = lower(trim(p_username))
+  order by case when lower(u.username) = lower(trim(p_username)) then 0 else 1 end
+  limit 1;
+
+  if v_target_id is null then
+    raise exception 'User id not found.';
+  end if;
+
+  if v_target_id = v_admin.id then
+    raise exception 'You cannot delete your own user id.';
+  end if;
+
+  delete from public.printmore_users u
+  where u.id = v_target_id
+  returning * into v_user;
+
+  return query
+  select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user;
 end;
 $$;
 
 grant execute on function public.authenticate_printmore_user(text, text) to anon;
-grant execute on function public.create_printmore_user(text, text, text, text, text) to anon;
+grant execute on function public.create_printmore_user(text, text, text, text, text, text) to anon;
 grant execute on function public.reset_printmore_user_password(text, text, text, text) to anon;
 grant execute on function public.set_printmore_user_active(text, text, text, boolean) to anon;
+grant execute on function public.update_printmore_user(text, text, text, text, boolean) to anon;
+grant execute on function public.find_printmore_user(text) to anon;
+grant execute on function public.list_printmore_users(text, text) to anon;
+grant execute on function public.delete_printmore_user(text, text, text) to anon;

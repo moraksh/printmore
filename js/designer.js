@@ -167,7 +167,14 @@ class Designer {
   _getPageDimensions() {
     const page = this.layout.page;
     const sizes = window.PAGE_SIZES;
-    let { width, height } = sizes[page.size] || sizes['A4'];
+    let width;
+    let height;
+    if (page.size === 'custom') {
+      width = Math.max(20, parseFloat(page.customWidthMm ?? page.customWidth) || 210);
+      height = Math.max(20, parseFloat(page.customHeightMm ?? page.customHeight) || 297);
+    } else {
+      ({ width, height } = sizes[page.size] || sizes['A4']);
+    }
     if (page.orientation === 'landscape') { [width, height] = [height, width]; }
     return {
       pageWidthMm: width,
@@ -1079,6 +1086,7 @@ class Designer {
       }
       input.value = '';
     });
+
     this._updateToolButtons();
     this._initPropertiesEvents();
     this._initContextMenu();
@@ -1094,6 +1102,10 @@ class Designer {
       const ml = parseFloat(document.getElementById('inline-margin-left')?.value) || 0;
       if (sz) this.layout.page.size = sz;
       if (or) this.layout.page.orientation = or;
+      if ((sz || this.layout.page.size) === 'custom') {
+        this.layout.page.customWidthMm = Math.max(20, parseFloat(document.getElementById('inline-custom-width')?.value) || 210);
+        this.layout.page.customHeightMm = Math.max(20, parseFloat(document.getElementById('inline-custom-height')?.value) || 297);
+      }
       this.layout.page.marginTop = mt;
       this.layout.page.marginRight = mr;
       this.layout.page.marginBottom = mb;
@@ -1107,13 +1119,18 @@ class Designer {
       this.layout.page.footerPages   = document.getElementById('inline-footer-pages')?.value || 'all';
       this.initCanvas();
       this.renderElements();
+      this._showNoSelectionPanel();
       this.saveLayout();
     };
-    ['inline-page-size','inline-orientation','inline-margin-top','inline-margin-right','inline-margin-bottom','inline-margin-left',
+    ['inline-page-size','inline-custom-width','inline-custom-height','inline-orientation','inline-margin-top','inline-margin-right','inline-margin-bottom','inline-margin-left',
      'inline-header-height','inline-header-pages','inline-footer-height','inline-footer-pages'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('change', inlinePageChange);
       if (el) el.addEventListener('input', inlinePageChange);
+    });
+    document.getElementById('inline-page-size')?.addEventListener('change', () => {
+      const isCustom = document.getElementById('inline-page-size')?.value === 'custom';
+      document.getElementById('inline-custom-size-group')?.classList.toggle('hidden', !isCustom);
     });
 
     // Zone enable/disable toggles
@@ -1125,6 +1142,7 @@ class Designer {
       document.getElementById('inline-footer-options')?.classList.toggle('hidden', !e.target.checked);
       inlinePageChange();
     });
+
   }
 
   setActiveTool(tool) {
@@ -1159,10 +1177,12 @@ class Designer {
       item.draggable = true;
         item.dataset.name = name;
         item.dataset.type = type;
+        const asTextButton = type === 'field' ? '<button data-action="as-text" title="Drag as text">T</button>' : '';
         item.innerHTML = `
           <span class="field-item-icon">${type === 'field' ? '{}' : 'T'}</span>
           <span class="field-item-name">${window.escapeHtml(name)}</span>
           <span class="field-item-actions">
+            ${asTextButton}
             <button data-action="up" title="Move up">↑</button>
             <button data-action="down" title="Move down">↓</button>
           </span>
@@ -1177,6 +1197,17 @@ class Designer {
       item.addEventListener('dragend', () => {
         this.fieldDragName = null;
       });
+        const asTextBtn = type === 'field' ? item.querySelector('[data-action="as-text"]') : null;
+        if (asTextBtn) {
+          asTextBtn.setAttribute('draggable', 'true');
+          asTextBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+          asTextBtn.addEventListener('dragstart', (e) => {
+            this.fieldDragName = name;
+            e.dataTransfer.effectAllowed = 'copy';
+            e.dataTransfer.setData('text/plain', name);
+            e.dataTransfer.setData('application/x-printmore-item-type', 'text');
+          });
+        }
         item.querySelector('[data-action="up"]').addEventListener('click', (e) => {
           e.stopPropagation();
           if (index <= 0) return;
@@ -1194,8 +1225,11 @@ class Designer {
     });
     };
 
+    const textItems = (this.layout.texts && this.layout.texts.length)
+      ? this.layout.texts
+      : (this.layout.fields || []);
     renderList('fields-list', this.layout.fields || [], 'field');
-    renderList('texts-list', this.layout.texts || [], 'text');
+    renderList('texts-list', textItems, 'text');
   }
 
   _saveLayoutDefinition() {
@@ -2105,12 +2139,17 @@ class Designer {
       const mr = document.getElementById('inline-margin-right');
       const mb = document.getElementById('inline-margin-bottom');
       const ml = document.getElementById('inline-margin-left');
+      const cw = document.getElementById('inline-custom-width');
+      const ch = document.getElementById('inline-custom-height');
       if (sz) sz.value = p.size || 'A4';
       if (or) or.value = p.orientation || 'portrait';
       if (mt) mt.value = p.marginTop ?? 15;
       if (mr) mr.value = p.marginRight ?? 15;
       if (mb) mb.value = p.marginBottom ?? 15;
       if (ml) ml.value = p.marginLeft ?? 15;
+      if (cw) cw.value = p.customWidthMm ?? p.customWidth ?? 210;
+      if (ch) ch.value = p.customHeightMm ?? p.customHeight ?? 297;
+      document.getElementById('inline-custom-size-group')?.classList.toggle('hidden', (p.size || 'A4') !== 'custom');
 
       // Zone settings
       const hEn = document.getElementById('inline-header-enabled');
@@ -2131,6 +2170,7 @@ class Designer {
       if (fPg) fPg.value = p.footerPages || 'all';
       if (fOpts) fOpts.classList.toggle('hidden', !p.footerEnabled);
     }
+
   }
 
   _showElementProperties(id) {
@@ -3012,6 +3052,9 @@ class Designer {
     const p = this.layout.page;
     document.getElementById('modal-page-size').value = p.size;
     document.getElementById('modal-orientation').value = p.orientation;
+    document.getElementById('modal-custom-width').value = p.customWidthMm ?? p.customWidth ?? 210;
+    document.getElementById('modal-custom-height').value = p.customHeightMm ?? p.customHeight ?? 297;
+    document.getElementById('modal-custom-size-group')?.classList.toggle('hidden', p.size !== 'custom');
     document.getElementById('modal-margin-top').value = p.marginTop;
     document.getElementById('modal-margin-bottom').value = p.marginBottom;
     document.getElementById('modal-margin-left').value = p.marginLeft;
@@ -3022,6 +3065,10 @@ class Designer {
   applyPageSettings() {
     this.layout.page.size = document.getElementById('modal-page-size').value;
     this.layout.page.orientation = document.getElementById('modal-orientation').value;
+    if (this.layout.page.size === 'custom') {
+      this.layout.page.customWidthMm = Math.max(20, parseFloat(document.getElementById('modal-custom-width').value) || 210);
+      this.layout.page.customHeightMm = Math.max(20, parseFloat(document.getElementById('modal-custom-height').value) || 297);
+    }
     this.layout.page.marginTop = parseFloat(document.getElementById('modal-margin-top').value) || 0;
     this.layout.page.marginBottom = parseFloat(document.getElementById('modal-margin-bottom').value) || 0;
     this.layout.page.marginLeft = parseFloat(document.getElementById('modal-margin-left').value) || 0;

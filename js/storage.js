@@ -224,6 +224,41 @@ const LayoutStore = (() => {
     }
   }
 
+  async function saveForUser(layout, targetUser) {
+    if (!client || !targetUser?.id) return { ok: false, error: new Error('Supabase is not configured.') };
+    const cleanLayout = JSON.parse(JSON.stringify(layout || {}));
+    cleanLayout.userId = targetUser.id;
+    cleanLayout.username = String(targetUser.username || '').toUpperCase();
+
+    try {
+      const { data: existing, error: nameErr } = await client
+        .from(tableName)
+        .select('id')
+        .eq('user_id', targetUser.id)
+        .ilike('name', cleanLayout.name || '')
+        .limit(1);
+      if (nameErr) throw nameErr;
+      if (Array.isArray(existing) && existing.length > 0) {
+        return { ok: false, error: new Error(`Layout name "${cleanLayout.name}" already exists for ${cleanLayout.username}.`) };
+      }
+
+      const { error } = await client
+        .from(tableName)
+        .upsert({
+          id: cleanLayout.id,
+          user_id: targetUser.id,
+          name: cleanLayout.name || 'Untitled Layout',
+          layout: cleanLayout,
+          updated_at: new Date().toISOString(),
+        });
+      if (error) throw error;
+      return { ok: true, mode: 'supabase' };
+    } catch (err) {
+      console.error('Supabase cross-user layout save failed.', err);
+      return { ok: false, error: err };
+    }
+  }
+
   async function remove(id) {
     cache = cache.filter(layout => layout.id !== id);
     writeLocal(cache);
@@ -259,6 +294,7 @@ const LayoutStore = (() => {
     getById,
     syncFromLocal,
     save,
+    saveForUser,
     remove,
     status,
     getSmartRules,
