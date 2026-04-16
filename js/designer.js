@@ -1928,7 +1928,11 @@ class Designer {
       if (action === 'insert-col-after' && this.selectedCell?.isColumn) {
         this.insertTableColumn(this.selectedCell.elementId, this.selectedCell.col, 'after');
       }
-      if (action === 'delete') this.deleteSelected();
+      if (action === 'delete' && this.selectedCell?.isColumn) {
+        this.deleteTableColumn(this.selectedCell.elementId, this.selectedCell.col);
+      } else if (action === 'delete') {
+        this.deleteSelected();
+      }
     });
   }
 
@@ -1985,6 +1989,46 @@ class Designer {
     this.renderElements();
     this.selectElement(elementId);
     this._selectTableColumn(elementId, insertAt);
+    this._saveLayoutElements();
+  }
+
+  deleteTableColumn(elementId, colIndex) {
+    const el = this._findElement(elementId);
+    if (!el || el.type !== 'table') return;
+
+    el.table = el.table || {};
+    const currentCols = Math.max(1, el.table.cols || 1);
+    if (currentCols <= 1) return;
+    const deleteAt = Math.max(0, Math.min(currentCols - 1, colIndex || 0));
+
+    this.saveToHistory();
+
+    const colWidths = Array.isArray(el.table.colWidths) ? el.table.colWidths.slice() : Array(currentCols).fill(1);
+    if (colWidths.length < currentCols) {
+      while (colWidths.length < currentCols) colWidths.push(1);
+    }
+    colWidths.splice(deleteAt, 1);
+    el.table.colWidths = colWidths;
+
+    const cells = Array.isArray(el.table.cells) ? el.table.cells : [];
+    const shiftedCells = [];
+    cells.forEach(cell => {
+      if (cell.col === deleteAt) return;
+      if (cell.col > deleteAt) cell.col -= 1;
+      shiftedCells.push(cell);
+    });
+    el.table.cells = shiftedCells;
+
+    const colProps = Array.isArray(el.table.colProps) ? el.table.colProps.slice() : [];
+    while (colProps.length < currentCols) colProps.push({});
+    colProps.splice(deleteAt, 1);
+    el.table.colProps = colProps;
+
+    el.table.cols = currentCols - 1;
+
+    this.renderElements();
+    this.selectElement(elementId);
+    this._selectTableColumn(elementId, Math.max(0, deleteAt - 1));
     this._saveLayoutElements();
   }
 
