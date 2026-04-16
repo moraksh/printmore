@@ -677,6 +677,22 @@ class Designer {
           cell.textContent = '';
         }
 
+        if (r === 0) {
+          const insertBtn = document.createElement('button');
+          insertBtn.type = 'button';
+          insertBtn.className = 'table-col-insert-btn';
+          insertBtn.title = 'Insert column after';
+          insertBtn.textContent = '+';
+          insertBtn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            this.selectElement(el.id);
+            this.insertTableColumn(el.id, c, 'after');
+          });
+          cell.style.position = 'relative';
+          cell.appendChild(insertBtn);
+        }
+
         // Single-click in header selects the whole column (for barcode/column props).
         // Use Ctrl+click on header when you want only that one header cell selected.
         cell.addEventListener('click', (e) => {
@@ -687,6 +703,11 @@ class Designer {
             } else {
               this._selectTableCell(el.id, r, c);
             }
+          }
+        });
+        cell.addEventListener('contextmenu', () => {
+          if (this.selectedId === el.id && r === 0) {
+            this._selectTableColumn(el.id, c);
           }
         });
 
@@ -1878,6 +1899,7 @@ class Designer {
     e.preventDefault();
     e.stopPropagation();
     this.selectElement(elementId);
+    this._toggleTableColumnContextActions();
 
     const menu = document.getElementById('context-menu');
     menu.style.left = e.clientX + 'px';
@@ -1900,13 +1922,70 @@ class Designer {
       if (action === 'duplicate') this.duplicateSelected();
       if (action === 'bring-front') this.bringToFront();
       if (action === 'send-back') this.sendToBack();
+      if (action === 'insert-col-before' && this.selectedCell?.isColumn) {
+        this.insertTableColumn(this.selectedCell.elementId, this.selectedCell.col, 'before');
+      }
+      if (action === 'insert-col-after' && this.selectedCell?.isColumn) {
+        this.insertTableColumn(this.selectedCell.elementId, this.selectedCell.col, 'after');
+      }
       if (action === 'delete') this.deleteSelected();
+    });
+  }
+
+  _toggleTableColumnContextActions() {
+    const selectedEl = this.selectedId ? this._findElement(this.selectedId) : null;
+    const showForColumn = !!(
+      this.selectedCell &&
+      this.selectedCell.isColumn &&
+      selectedEl &&
+      selectedEl.type === 'table' &&
+      this.selectedCell.elementId === selectedEl.id
+    );
+    document.querySelectorAll('#context-menu .ctx-table-col').forEach(item => {
+      item.classList.toggle('hidden', !showForColumn);
     });
   }
 
   _hideContextMenu() {
     const menu = document.getElementById('context-menu');
     if (menu) menu.classList.add('hidden');
+  }
+
+  insertTableColumn(elementId, colIndex, position = 'after') {
+    const el = this._findElement(elementId);
+    if (!el || el.type !== 'table') return;
+
+    el.table = el.table || {};
+    const currentCols = Math.max(1, el.table.cols || 1);
+    const targetCol = Math.max(0, Math.min(currentCols - 1, colIndex || 0));
+    const insertAt = position === 'before' ? targetCol : targetCol + 1;
+
+    this.saveToHistory();
+
+    const colWidths = Array.isArray(el.table.colWidths) && el.table.colWidths.length === currentCols
+      ? el.table.colWidths.slice()
+      : Array(currentCols).fill(1);
+    const sourceWidth = colWidths[targetCol] || 1;
+    colWidths.splice(insertAt, 0, sourceWidth);
+    el.table.colWidths = colWidths;
+
+    const cells = Array.isArray(el.table.cells) ? el.table.cells : [];
+    cells.forEach(cell => {
+      if (cell.col >= insertAt) cell.col += 1;
+    });
+    el.table.cells = cells;
+
+    const colProps = Array.isArray(el.table.colProps) ? el.table.colProps.slice() : [];
+    while (colProps.length < currentCols) colProps.push({});
+    colProps.splice(insertAt, 0, {});
+    el.table.colProps = colProps;
+
+    el.table.cols = currentCols + 1;
+
+    this.renderElements();
+    this.selectElement(elementId);
+    this._selectTableColumn(elementId, insertAt);
+    this._saveLayoutElements();
   }
 
   // ===== Element operations =====
