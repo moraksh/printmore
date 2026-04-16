@@ -549,6 +549,8 @@ class Designer {
     const tbl = el.table || { rows: 2, cols: 4, cells: [], theme: 'plain', borderMode: 'all', colWidths: [1, 1, 1, 1], detailMode: false };
     const rows = tbl.rows || 2;
     const cols = tbl.cols || 4;
+    const footerEnabled = tbl.footerEnabled === true;
+    const renderRows = rows + (footerEnabled ? 1 : 0);
     const theme = tbl.theme || 'plain';
     const borderMode = tbl.borderMode || 'all';
 
@@ -558,7 +560,7 @@ class Designer {
 
     // Theme presets
     const themes = {
-      'plain':       { headerBg: '#e8e8e8', headerColor: '#000', rowBg: '#fff', altRowBg: '#f8f8f8' },
+      'plain':       { headerBg: '#ffffff', headerColor: '#000', rowBg: '#fff', altRowBg: '#ffffff' },
       'dark-header': { headerBg: '#2d2d4e', headerColor: '#fff', rowBg: '#fff', altRowBg: '#f0f0f8' },
       'blue':        { headerBg: '#2a5298', headerColor: '#fff', rowBg: '#fff', altRowBg: '#eef3fb' },
       'green':       { headerBg: '#2d6a4f', headerColor: '#fff', rowBg: '#fff', altRowBg: '#eef7f2' },
@@ -572,12 +574,16 @@ class Designer {
     const altRowBg = tbl.altRowBg || t.altRowBg;
 
     // rowHeights support
-    const rowHeights = tbl.rowHeights && tbl.rowHeights.length === rows ? tbl.rowHeights : Array(rows).fill(1);
-    const rowTotal = rowHeights.reduce((s, h) => s + h, 0);
+    const rowHeights = this._baseRowHeightsMm(tbl, el.height);
+    const footerRowHeight = Number.isFinite(tbl.footerRowHeight) && tbl.footerRowHeight > 0
+      ? tbl.footerRowHeight
+      : (rowHeights[Math.max(1, rows) - 1] || 1);
+    const renderRowHeights = footerEnabled ? rowHeights.concat([footerRowHeight]) : rowHeights;
+    const rowTotal = renderRowHeights.reduce((s, h) => s + h, 0);
 
     domEl.style.display = 'grid';
     domEl.style.gridTemplateColumns = colWidths.map(w => (w / total * 100).toFixed(2) + '%').join(' ');
-    domEl.style.gridTemplateRows = rowHeights.map(h => (h / rowTotal * 100).toFixed(2) + '%').join(' ');
+    domEl.style.gridTemplateRows = renderRowHeights.map(h => (h / rowTotal * 100).toFixed(2) + '%').join(' ');
     domEl.style.overflow = 'hidden';
     domEl.style.position = 'relative';
 
@@ -585,9 +591,10 @@ class Designer {
     const bc = style.borderColor || '#cccccc';
     const bw = Math.max(1, style.borderWidth !== undefined ? style.borderWidth : 1);
 
-    for (let r = 0; r < rows; r++) {
+    for (let r = 0; r < renderRows; r++) {
       for (let c = 0; c < cols; c++) {
-        const cellData = (tbl.cells || []).find(cl => cl.row === r && cl.col === c);
+        const isFooterRow = footerEnabled && r === renderRows - 1;
+        const cellData = !isFooterRow ? (tbl.cells || []).find(cl => cl.row === r && cl.col === c) : null;
         const cell = document.createElement('div');
         cell.className = 'el-table-cell';
         cell.dataset.row = r;
@@ -620,6 +627,10 @@ class Designer {
           cell.style.backgroundColor = headerBg;
           cell.style.color = cellStyle.color || headerColor;
           cell.style.fontWeight = cellStyle.fontWeight || '600';
+        } else if (isFooterRow) {
+          cell.style.backgroundColor = rowBg;
+          cell.style.color = cellStyle.color || style.color || '#000000';
+          cell.style.fontWeight = cellStyle.fontWeight || '600';
         } else {
           cell.style.backgroundColor = (r % 2 === 0) ? altRowBg : rowBg;
           cell.style.color = cellStyle.color || style.color || '#000000';
@@ -634,12 +645,13 @@ class Designer {
         } else if (borderMode === 'header-outer') {
           cell.style.border = 'none';
           if (r === 0) cell.style.borderBottom = `2px ${style.borderStyle || 'solid'} ${bc}`;
+          if (isFooterRow) cell.style.borderTop = `2px ${style.borderStyle || 'solid'} ${bc}`;
         } else {
           cell.style.border = 'none';
         }
 
         // Content — barcode columns show a barcode preview in data rows
-        if (cp.barcode && r > 0) {
+        if (cp.barcode && r > 0 && !isFooterRow) {
           cell.style.padding = '2px';
           cell.style.alignItems = 'center';
           cell.style.justifyContent = 'center';
@@ -674,9 +686,18 @@ class Designer {
             cell.style.position = 'relative';
             cell.appendChild(lbl);
           }
+        } else if (isFooterRow) {
+          const footerType = cp.footerType || 'none';
+          if (footerType === 'text') {
+            cell.textContent = cp.footerText || '';
+          } else if (footerType === 'sum') {
+            cell.textContent = 'SUM';
+          } else {
+            cell.textContent = '';
+          }
         } else if (cellData && cellData.fieldName) {
           cell.textContent = `{${cellData.fieldName}}`;
-          cell.style.color = r === 0 ? headerColor : '#3366cc';
+          cell.style.color = r === 0 ? headerColor : (style.color || '#000000');
           cell.classList.add('has-field');
         } else if (cellData && cellData.content) {
           cell.textContent = cellData.content;
@@ -705,7 +726,7 @@ class Designer {
         cell.addEventListener('click', (e) => {
           e.stopPropagation();
           if (this.selectedId === el.id) {
-            if (r === 0 && !e.ctrlKey) {
+            if ((r === 0 || isFooterRow) && !e.ctrlKey) {
               this._selectTableColumn(el.id, c);
             } else {
               this._selectTableCell(el.id, r, c);
@@ -719,26 +740,29 @@ class Designer {
         });
 
         // Make cell a drop target for fields
-        cell.addEventListener('dragover', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          cell.classList.add('drop-target');
-        });
-        cell.addEventListener('dragleave', () => cell.classList.remove('drop-target'));
-        cell.addEventListener('drop', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          cell.classList.remove('drop-target');
-          const itemType = e.dataTransfer.getData('application/x-printmore-item-type') || 'field';
-          const itemName = e.dataTransfer.getData('text/plain') || this.fieldDragName;
-          if (itemName) {
-            if (itemType === 'text') this._updateTableCell(el.id, r, c, null, itemName);
-            else this._updateTableCell(el.id, r, c, itemName, null);
-          }
-        });
+        if (!isFooterRow) {
+          cell.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            cell.classList.add('drop-target');
+          });
+          cell.addEventListener('dragleave', () => cell.classList.remove('drop-target'));
+          cell.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            cell.classList.remove('drop-target');
+            const itemType = e.dataTransfer.getData('application/x-printmore-item-type') || 'field';
+            const itemName = e.dataTransfer.getData('text/plain') || this.fieldDragName;
+            if (itemName) {
+              if (itemType === 'text') this._updateTableCell(el.id, r, c, null, itemName);
+              else this._updateTableCell(el.id, r, c, itemName, null);
+            }
+          });
+        }
 
         // Double-click to edit cell text as heading
         cell.addEventListener('dblclick', (e) => {
+          if (isFooterRow) return;
           e.stopPropagation();
           const editor = document.createElement('input');
           editor.type = 'text';
@@ -865,9 +889,9 @@ class Designer {
   // ===== Row Resize =====
   _addRowResizeHandles(tableDiv, el) {
     const tbl = el.table;
-    const rows = tbl.rows || 3;
-    if (rows < 1) return;
     const rowHeightsMm = this._rowHeightsMm(tbl, el.height);
+    const rows = rowHeightsMm.length;
+    if (rows < 1) return;
     const total = rowHeightsMm.reduce((s, h) => s + h, 0);
 
     // Handle at bottom edge of EVERY row (including last = table bottom border).
@@ -893,12 +917,21 @@ class Designer {
   }
 
   // Convert rowHeights (may be proportional or absolute mm) to absolute mm values.
-  _rowHeightsMm(tbl, elHeightMm) {
+  _baseRowHeightsMm(tbl, elHeightMm) {
     const rows = tbl.rows || 3;
     const stored = tbl.rowHeights;
     if (!stored || stored.length !== rows) return Array(rows).fill(elHeightMm / rows);
     const sum = stored.reduce((s, h) => s + h, 0);
     return sum < 20 ? stored.map(h => (h / sum) * elHeightMm) : stored.slice();
+  }
+
+  // Render row heights include footer row (if enabled).
+  _rowHeightsMm(tbl, elHeightMm) {
+    const base = this._baseRowHeightsMm(tbl, elHeightMm);
+    if (!tbl.footerEnabled) return base;
+    const fallback = base[Math.max(1, base.length) - 1] || (elHeightMm / Math.max(2, (tbl.rows || 1) + 1));
+    const footer = Number.isFinite(tbl.footerRowHeight) && tbl.footerRowHeight > 0 ? tbl.footerRowHeight : fallback;
+    return base.concat([footer]);
   }
 
   _startRowResize(e, elementId, rowIndex) {
@@ -924,7 +957,13 @@ class Designer {
     newMms[rs.rowIndex] = Math.max(minRowMm, newMms[rs.rowIndex] + dyMm);
     const actualDyMm = newMms[rs.rowIndex] - rs.startHeightsMm[rs.rowIndex];
 
-    el.table.rowHeights = newMms;
+    const baseRows = el.table.rows || 3;
+    if (el.table.footerEnabled) {
+      el.table.rowHeights = newMms.slice(0, baseRows);
+      el.table.footerRowHeight = newMms[baseRows] || el.table.footerRowHeight || newMms[Math.max(0, baseRows - 1)] || 1;
+    } else {
+      el.table.rowHeights = newMms;
+    }
     el.height = Math.max(10, rs.startElHeight + actualDyMm);
 
     const domEl = this.pageCanvas.querySelector(`[data-id="${rs.elementId}"]`);
@@ -1022,6 +1061,12 @@ class Designer {
     if (barcodeTypeEl) barcodeTypeEl.value = cp.barcodeType || 'CODE128';
     const barcodeShowTextEl = document.getElementById('col-prop-barcode-showtext');
     if (barcodeShowTextEl) barcodeShowTextEl.checked = cp.barcodeShowText !== false;
+    const footerTypeEl = document.getElementById('col-prop-footer-type');
+    if (footerTypeEl) footerTypeEl.value = cp.footerType || 'none';
+    const footerTextEl = document.getElementById('col-prop-footer-text');
+    if (footerTextEl) footerTextEl.value = cp.footerText || '';
+    const footerMergeNextEl = document.getElementById('col-prop-footer-merge-next');
+    if (footerMergeNextEl) footerMergeNextEl.checked = !!cp.footerMergeNext;
   }
 
   // ===== Resize Handles =====
@@ -1273,8 +1318,10 @@ class Designer {
     const el = this._createElementData(itemType === 'text' ? 'text' : 'field', xMm, yMm);
     if (itemType === 'text') {
       el.content = itemName;
+      this._autoFitTextElement(el);
     } else {
       el.fieldName = itemName;
+      this._autoFitTextElement(el);
     }
     this.elements.push(el);
     this.renderElements();
@@ -1392,11 +1439,26 @@ class Designer {
     let hMm = this._pxToMm(h);
 
     // Minimum size
-    if (wMm < MIN_ELEMENT_SIZE) wMm = 40;
-    if (hMm < MIN_ELEMENT_SIZE) hMm = 10;
+    if (wMm < MIN_ELEMENT_SIZE) {
+      if (this.drawState?.tool === 'text' || this.drawState?.tool === 'field') {
+        wMm = this._defaultSizeForType(this.drawState.tool).width;
+      } else {
+        wMm = 40;
+      }
+    }
+    if (hMm < MIN_ELEMENT_SIZE) {
+      if (this.drawState?.tool === 'text' || this.drawState?.tool === 'field') {
+        hMm = this._defaultSizeForType(this.drawState.tool).height;
+      } else {
+        hMm = 10;
+      }
+    }
 
     this.saveToHistory();
     const el = this._createElementData(this.drawState.tool, xMm, yMm, wMm, hMm);
+    if (el.type === 'text' || el.type === 'field') {
+      this._autoFitTextElement(el);
+    }
     this.elements.push(el);
 
     this.drawState = null;
@@ -1516,15 +1578,34 @@ class Designer {
         borderStyle: 'solid',
         opacity: 1,
       },
-      table: { rows: 2, cols: 4, cells: [], theme: 'plain', borderMode: 'all', colWidths: [1,1,1,1], rowHeights: [1,1], detailMode: false, colProps: [] },
+      table: {
+        rows: 2,
+        cols: 4,
+        cells: [],
+        theme: 'plain',
+        borderMode: 'all',
+        colWidths: [1, 1, 1, 1],
+        rowHeights: [1, 1],
+        detailMode: false,
+        colProps: [],
+        headerBg: '#ffffff',
+        headerColor: '#000000',
+        rowBg: '#ffffff',
+        altRowBg: '#ffffff',
+        footerEnabled: false,
+        footerRowHeight: 1,
+      },
     };
+    if ((type === 'text' || type === 'field') && width === defaults.width && height === defaults.height) {
+      this._autoFitTextElement(el);
+    }
     return el;
   }
 
   _defaultSizeForType(type) {
     switch (type) {
-      case 'text':     return { width: 60, height: 10 };
-      case 'field':    return { width: 60, height: 10 };
+      case 'text':     return { width: 10, height: 6 };
+      case 'field':    return { width: 10, height: 6 };
       case 'user':     return { width: 45, height: 10 };
       case 'image':
       case 'logo':     return { width: 40, height: 30 };
@@ -1536,6 +1617,32 @@ class Designer {
       case 'barcode':  return { width: 45, height: 22 };
       default:         return { width: 60, height: 20 };
     }
+  }
+
+  _estimateTextWidthMm(text, fontSizePt) {
+    const value = String(text || '');
+    const sizePt = parseFloat(fontSizePt) || 12;
+    const sizePx = (sizePt * 96) / 72;
+    if (!this._measureCanvas) this._measureCanvas = document.createElement('canvas');
+    const ctx = this._measureCanvas.getContext('2d');
+    if (!ctx) return Math.max(1, value.length) * (sizePt * 0.22);
+    ctx.font = `${sizePx}px Arial`;
+    const px = Math.max(1, ctx.measureText(value).width);
+    return px / MM_TO_PX;
+  }
+
+  _autoFitTextElement(el) {
+    if (!el || (el.type !== 'text' && el.type !== 'field')) return;
+    const style = el.style || {};
+    const fontSize = parseFloat(style.fontSize) || 12;
+    const displayText = el.type === 'field'
+      ? `{${String(el.fieldName || '') || 'Field'}}`
+      : String(el.content || 'Text');
+    const contentW = this._estimateTextWidthMm(displayText, fontSize);
+    const desiredW = Math.max(6, Math.min(120, contentW + 1.6));
+    const desiredH = Math.max(4.5, (fontSize * 0.3528) + 1.2);
+    el.width = desiredW;
+    el.height = desiredH;
   }
 
   // ===== Selection =====
@@ -1842,7 +1949,10 @@ class Designer {
       }
       if (rs.startElH > 0 && el.height !== rs.startElH) {
         const ratio = el.height / rs.startElH;
-        el.table.rowHeights = this._rowHeightsMm(el.table, rs.startElH).map(h => Math.max(2, h * ratio));
+        el.table.rowHeights = this._baseRowHeightsMm(el.table, rs.startElH).map(h => Math.max(2, h * ratio));
+        if (el.table.footerEnabled && Number.isFinite(el.table.footerRowHeight)) {
+          el.table.footerRowHeight = Math.max(2, el.table.footerRowHeight * ratio);
+        }
       }
     }
 
@@ -1900,8 +2010,10 @@ class Designer {
       const val = editor.value.trim();
       if (el.type === 'text') {
         el.content = val || 'Text';
+        this._autoFitTextElement(el);
       } else if (el.type === 'field') {
         el.fieldName = val;
+        this._autoFitTextElement(el);
       }
       editor.remove();
       this.saveToHistory();
@@ -1909,6 +2021,8 @@ class Designer {
       if (singleDom) {
         if (el.type === 'text') singleDom.textContent = el.content;
         else singleDom.textContent = el.fieldName ? `{${el.fieldName}}` : '{Field}';
+        singleDom.style.width = this._mmToPx(el.width) + 'px';
+        singleDom.style.height = this._mmToPx(el.height) + 'px';
         this._renderResizeHandles(singleDom, elementId);
       }
       this._saveLayoutElements();
@@ -2282,15 +2396,17 @@ class Designer {
       const borderModeEl = document.getElementById('prop-table-border-mode');
       if (borderModeEl) borderModeEl.value = tbl.borderMode || 'all';
       const headerBgEl = document.getElementById('prop-table-header-bg');
-      if (headerBgEl) headerBgEl.value = tbl.headerBg || '#4a4a8a';
+      if (headerBgEl) headerBgEl.value = tbl.headerBg || '#ffffff';
       const headerColorEl = document.getElementById('prop-table-header-color');
-      if (headerColorEl) headerColorEl.value = tbl.headerColor || '#ffffff';
+      if (headerColorEl) headerColorEl.value = tbl.headerColor || '#000000';
       const rowBgEl = document.getElementById('prop-table-row-bg');
       if (rowBgEl) rowBgEl.value = tbl.rowBg || '#ffffff';
       const altBgEl = document.getElementById('prop-table-alt-bg');
-      if (altBgEl) altBgEl.value = tbl.altRowBg || '#f0f0f8';
+      if (altBgEl) altBgEl.value = tbl.altRowBg || '#ffffff';
       const detailModeEl = document.getElementById('prop-table-detail-mode');
       if (detailModeEl) detailModeEl.value = tbl.detailMode ? 'detail' : 'static';
+      const footerEnabledEl = document.getElementById('prop-table-footer-enabled');
+      if (footerEnabledEl) footerEnabledEl.checked = tbl.footerEnabled === true;
     }
 
     // Image
@@ -2666,8 +2782,13 @@ class Designer {
       const el = this._findElement(this.selectedId);
       if (!el) return;
       el.fieldName = document.getElementById('prop-field-name').value;
+      this._autoFitTextElement(el);
       const domEl = this.pageCanvas.querySelector(`[data-id="${this.selectedId}"]`);
-      if (domEl) domEl.textContent = el.fieldName ? `{${el.fieldName}}` : '{Field}';
+      if (domEl) {
+        domEl.textContent = el.fieldName ? `{${el.fieldName}}` : '{Field}';
+        domEl.style.width = this._mmToPx(el.width) + 'px';
+        domEl.style.height = this._mmToPx(el.height) + 'px';
+      }
       this._renderResizeHandles(domEl, this.selectedId);
       this._debounceSave();
     });
@@ -2704,6 +2825,9 @@ class Designer {
       if (!el.table.rowHeights || el.table.rowHeights.length !== newRows) {
         el.table.rowHeights = Array(newRows).fill(1);
       }
+      if (!Number.isFinite(el.table.footerRowHeight) || el.table.footerRowHeight <= 0) {
+        el.table.footerRowHeight = el.table.rowHeights[Math.max(0, newRows - 1)] || 1;
+      }
       this.saveToHistory();
       this.renderElements();
       this.selectElement(this.selectedId);
@@ -2722,7 +2846,7 @@ class Designer {
       el.table.theme = btn.dataset.theme;
       // Apply theme defaults
       const themes = {
-        'plain':       { headerBg: '#e8e8e8', headerColor: '#000000', rowBg: '#ffffff', altRowBg: '#f8f8f8' },
+        'plain':       { headerBg: '#ffffff', headerColor: '#000000', rowBg: '#ffffff', altRowBg: '#ffffff' },
         'dark-header': { headerBg: '#2d2d4e', headerColor: '#ffffff', rowBg: '#ffffff', altRowBg: '#f0f0f8' },
         'blue':        { headerBg: '#2a5298', headerColor: '#ffffff', rowBg: '#ffffff', altRowBg: '#eef3fb' },
         'green':       { headerBg: '#2d6a4f', headerColor: '#ffffff', rowBg: '#ffffff', altRowBg: '#eef7f2' },
@@ -2755,18 +2879,23 @@ class Designer {
       if (!el || el.type !== 'table') return;
       el.table = el.table || {};
       el.table.borderMode = document.getElementById('prop-table-border-mode')?.value || 'all';
-      el.table.headerBg = document.getElementById('prop-table-header-bg')?.value || '#4a4a8a';
-      el.table.headerColor = document.getElementById('prop-table-header-color')?.value || '#ffffff';
+      el.table.headerBg = document.getElementById('prop-table-header-bg')?.value || '#ffffff';
+      el.table.headerColor = document.getElementById('prop-table-header-color')?.value || '#000000';
       el.table.rowBg = document.getElementById('prop-table-row-bg')?.value || '#ffffff';
-      el.table.altRowBg = document.getElementById('prop-table-alt-bg')?.value || '#f0f0f8';
+      el.table.altRowBg = document.getElementById('prop-table-alt-bg')?.value || '#ffffff';
       el.table.detailMode = document.getElementById('prop-table-detail-mode')?.value === 'detail';
+      el.table.footerEnabled = !!document.getElementById('prop-table-footer-enabled')?.checked;
+      if (el.table.footerEnabled && (!Number.isFinite(el.table.footerRowHeight) || el.table.footerRowHeight <= 0)) {
+        const base = this._baseRowHeightsMm(el.table, el.height);
+        el.table.footerRowHeight = base[Math.max(0, base.length - 1)] || 1;
+      }
       this.saveToHistory();
       this.renderElements();
       this.selectElement(this.selectedId);
       this._saveLayoutElements();
     };
 
-    ['prop-table-border-mode','prop-table-header-bg','prop-table-header-color','prop-table-row-bg','prop-table-alt-bg','prop-table-detail-mode'].forEach(id => {
+    ['prop-table-border-mode','prop-table-header-bg','prop-table-header-color','prop-table-row-bg','prop-table-alt-bg','prop-table-detail-mode','prop-table-footer-enabled'].forEach(id => {
       const elId = document.getElementById(id);
       if (elId) elId.addEventListener('change', tableStyleChange);
       if (elId) elId.addEventListener('input', tableStyleChange);
@@ -2780,16 +2909,21 @@ class Designer {
       if (!el || el.type !== 'table') return;
       if (!el.table.colProps) el.table.colProps = [];
       while (el.table.colProps.length <= col) el.table.colProps.push({});
+      const prev = el.table.colProps[col] || {};
 
       const activeAlignBtn = document.querySelector('#col-align-btns .align-btn.active[data-col-align]');
       const barcodeEnabled = !!document.getElementById('col-prop-barcode')?.checked;
       el.table.colProps[col] = {
+        ...prev,
         textAlign: activeAlignBtn ? activeAlignBtn.dataset.colAlign : 'left',
         paddingLeft: parseInt(document.getElementById('col-prop-pad-left')?.value) || 5,
         paddingRight: parseInt(document.getElementById('col-prop-pad-right')?.value) || 5,
         barcode: barcodeEnabled,
         barcodeType: document.getElementById('col-prop-barcode-type')?.value || 'CODE128',
         barcodeShowText: !!document.getElementById('col-prop-barcode-showtext')?.checked,
+        footerType: document.getElementById('col-prop-footer-type')?.value || 'none',
+        footerText: document.getElementById('col-prop-footer-text')?.value || '',
+        footerMergeNext: !!document.getElementById('col-prop-footer-merge-next')?.checked,
       };
 
       this.saveToHistory();
@@ -2823,6 +2957,10 @@ class Designer {
     });
     ['col-prop-barcode-type', 'col-prop-barcode-showtext'].forEach(id => {
       document.getElementById(id)?.addEventListener('change', colPropChange);
+    });
+    ['col-prop-footer-type', 'col-prop-footer-text', 'col-prop-footer-merge-next'].forEach(id => {
+      document.getElementById(id)?.addEventListener('change', colPropChange);
+      document.getElementById(id)?.addEventListener('input', colPropChange);
     });
 
     // Image upload
@@ -3014,9 +3152,12 @@ class Designer {
     const el = this._findElement(id);
     if (!el) return;
     el.content = content;
+    this._autoFitTextElement(el);
     const domEl = this.pageCanvas.querySelector(`[data-id="${id}"]`);
     if (domEl && el.type === 'text') {
       domEl.textContent = content || '';
+      domEl.style.width = this._mmToPx(el.width) + 'px';
+      domEl.style.height = this._mmToPx(el.height) + 'px';
       this._renderResizeHandles(domEl, id);
     }
     this._debounceSave();

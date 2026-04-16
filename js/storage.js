@@ -282,6 +282,38 @@ const LayoutStore = (() => {
     }
   }
 
+  async function listForUser(userId) {
+    if (!client) throw new Error('Supabase is not configured.');
+    if (!userId) throw new Error('User id is required.');
+    const { data, error } = await client
+      .from(tableName)
+      .select('id,name,layout,created_at,updated_at,user_id')
+      .eq('user_id', userId)
+      .order('updated_at', { ascending: false });
+    if (error) throw error;
+    return (data || []).map(row => {
+      const layout = normalizeLayout(row) || {};
+      layout.id = layout.id || row.id;
+      layout.name = layout.name || row.name || 'Untitled Layout';
+      layout.createdAt = layout.createdAt || row.created_at || null;
+      layout.updatedAt = layout.updatedAt || row.updated_at || null;
+      layout.userId = layout.userId || row.user_id || userId;
+      return layout;
+    });
+  }
+
+  async function removeForUser(layoutId, userId) {
+    if (!client) throw new Error('Supabase is not configured.');
+    if (!layoutId || !userId) throw new Error('Layout id and user id are required.');
+    const { error } = await client
+      .from(tableName)
+      .delete()
+      .eq('id', layoutId)
+      .eq('user_id', userId);
+    if (error) throw error;
+    return { ok: true };
+  }
+
   function status() {
     if (client && !lastError) return ready ? 'supabase' : 'loading';
     if (client && lastError) return 'offline';
@@ -296,6 +328,8 @@ const LayoutStore = (() => {
     save,
     saveForUser,
     remove,
+    listForUser,
+    removeForUser,
     status,
     getSmartRules,
     loadSmartRules,

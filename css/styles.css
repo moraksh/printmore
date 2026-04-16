@@ -234,6 +234,18 @@ input, select, textarea, button {
   padding: 32px;
 }
 
+.home-layouts-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.layout-search-input {
+  max-width: 320px;
+  width: 100%;
+}
+
 .section-title {
   font-size: 20px;
   font-weight: 700;
@@ -1190,6 +1202,11 @@ textarea { resize: vertical; }
   flex-wrap: wrap;
   gap: 8px;
 }
+.users-search-input {
+  margin-left: auto;
+  max-width: 260px;
+  min-width: 180px;
+}
 .user-directory-wrap {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1226,6 +1243,10 @@ textarea { resize: vertical; }
 }
 .user-directory-table tbody tr.selected td {
   background: rgba(45, 140, 255, 0.15);
+}
+.user-layout-actions {
+  display: flex;
+  gap: 6px;
 }
 .user-status-pill {
   border-radius: var(--radius-sm);

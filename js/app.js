@@ -39,6 +39,10 @@ let selectedManagedUser = null;
 let runParsedData = null;
 let manualRowCount = 1;
 let smartRulesDraft = null;
+let homeSearchQuery = '';
+let managedUsersCache = [];
+let managedLayoutsUser = null;
+let managedUsersSearchQuery = '';
 
 function getCurrentUser() {
   return window.AuthStore ? window.AuthStore.currentUser() : null;
@@ -127,6 +131,9 @@ function getLayoutById(id) {
 
 function saveLayout(layout) {
   if (!window.LayoutStore) return;
+  const nowIso = new Date().toISOString();
+  layout.createdAt = layout.createdAt || nowIso;
+  layout.updatedAt = nowIso;
   window.LayoutStore.save(layout).then(result => {
     updateStorageStatus();
     if (result && !result.ok) showToast('Saved locally. Supabase sync failed.');
@@ -144,6 +151,11 @@ function deleteLayout(id) {
 // ===== Export / Import =====
 function exportLayout(id) {
   const layout = getLayoutById(id);
+  if (!layout) return;
+  exportLayoutData(layout);
+}
+
+function exportLayoutData(layout) {
   if (!layout) return;
   const json = JSON.stringify(layout, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
@@ -235,18 +247,34 @@ function renderHomeView() {
   updateStorageStatus();
   const grid = document.getElementById('layouts-grid');
   const noMsg = document.getElementById('no-layouts-msg');
+  const searchInput = document.getElementById('layout-search-input');
   const layouts = loadLayouts();
   const user = getCurrentUser();
   const canDesign = user?.role === 'designer' || user?.role === 'super';
+  const search = (homeSearchQuery || '').trim().toLowerCase();
+  if (searchInput && searchInput.value !== homeSearchQuery) searchInput.value = homeSearchQuery;
+  const visibleLayouts = [...layouts]
+    .sort((a, b) => {
+      const ta = Date.parse(a?.updatedAt || a?.createdAt || 0) || 0;
+      const tb = Date.parse(b?.updatedAt || b?.createdAt || 0) || 0;
+      return tb - ta;
+    })
+    .filter(layout => !search || String(layout?.name || '').toLowerCase().includes(search));
 
   grid.innerHTML = '';
-  if (layouts.length === 0) {
+  if (visibleLayouts.length === 0) {
     noMsg.classList.remove('hidden');
+    const noMsgText = noMsg.querySelector('p');
+    if (noMsgText) {
+      noMsgText.innerHTML = search
+        ? 'No layouts match your search.'
+        : 'No layouts yet. Click <strong>+ New Layout</strong> to get started.';
+    }
     return;
   }
   noMsg.classList.add('hidden');
 
-  layouts.forEach(layout => {
+  visibleLayouts.forEach(layout => {
     const card = document.createElement('div');
     card.className = 'layout-card';
     const page = layout.page || {};
@@ -258,7 +286,7 @@ function renderHomeView() {
       </div>
       <div class="layout-card-meta">
         <span>${(layout.fields || []).length} field(s) · ${(layout.elements || []).length} element(s)</span>
-        <span>Created ${formatDate(layout.createdAt)}</span>
+        <span>Updated ${formatDate(layout.updatedAt || layout.createdAt)}</span>
       </div>
       <div class="layout-card-actions">
         ${canDesign ? `<button class="btn btn-primary btn-sm" data-action="edit" data-id="${layout.id}">Edit</button>` : ''}
@@ -355,10 +383,12 @@ function createNewLayout() {
   const fieldText = document.getElementById('field-names-input').value;
   const fields = parseFieldNames(fieldText);
 
+  const nowIso = new Date().toISOString();
   const layout = {
     id: generateId(),
     name: finalName,
-    createdAt: new Date().toISOString(),
+    createdAt: nowIso,
+    updatedAt: nowIso,
     page: { size, orientation, marginTop, marginBottom, marginLeft, marginRight, customWidthMm, customHeightMm },
     fields,
     texts: fields.slice(),
@@ -519,10 +549,15 @@ function buildTemplateElements(template, layout) {
   const picked = template === 'smart' ? smartTemplateKey(layout) : template;
   const ctx = templateContext(fields);
   const title = layout.name || 'DOCUMENT';
+  const titleFont = fs(15, 6);
+  const titleWidthMm = Math.max(
+    10,
+    Math.min(contentW * 0.8, (String(title).length * titleFont * 0.2) + 6)
+  );
   const makeId = p => 'el-' + p + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 5);
   const baseStyle = { ...style, backgroundColor: 'transparent', borderWidth: 0, borderColor: '#000000', borderStyle: 'solid', opacity: 1 };
   const elements = [
-    { id: makeId('title'), type: 'text', x: toX(0), y: toY(0), width: toW(Math.min(120, contentW * 0.63)), height: toH(8), content: title, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: fs(15, 6), fontWeight: 'bold' } },
+    { id: makeId('title'), type: 'text', x: toX(0), y: toY(0), width: toW(titleWidthMm), height: toH(8), content: title, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: titleFont, fontWeight: 'bold' } },
     { id: makeId('user'), type: 'user', x: toX(contentW - 45), y: toY(1), width: toW(45), height: toH(6), content: '', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: fs(8, 5), textAlign: 'right' } },
     { id: makeId('line'), type: 'line', x: toX(0), y: toY(12), width: toW(contentW), height: toH(2), lineDirection: 'horizontal', style: { ...baseStyle, borderWidth: 1, borderColor: '#000000' } },
   ];
@@ -852,6 +887,11 @@ function initHomeEvents() {
     importLayoutFromFile(e.target.files[0]);
   });
 
+  document.getElementById('layout-search-input')?.addEventListener('input', (e) => {
+    homeSearchQuery = e.target.value || '';
+    renderHomeView();
+  });
+
   document.getElementById('layouts-grid').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
@@ -968,6 +1008,8 @@ function openAddUserModal() {
   document.getElementById('new-user-role').value = 'user';
   document.getElementById('new-user-active').value = 'true';
   document.getElementById('new-user-password').value = '';
+  document.getElementById('users-search-input').value = '';
+  managedUsersSearchQuery = '';
   document.getElementById('users-directory-error').classList.add('hidden');
   document.getElementById('add-user-error').classList.add('hidden');
   document.getElementById('change-user-error')?.classList.add('hidden');
@@ -977,6 +1019,7 @@ function openAddUserModal() {
 
 function closeAddUserModal() {
   document.getElementById('modal-add-user').classList.add('hidden');
+  closeUserLayoutsModal();
 }
 
 function openCreateUserModal() {
@@ -1001,6 +1044,73 @@ function closeChangeUserModal() {
   document.getElementById('modal-change-user').classList.add('hidden');
 }
 
+function closeUserLayoutsModal() {
+  document.getElementById('modal-user-layouts')?.classList.add('hidden');
+  managedLayoutsUser = null;
+}
+
+function renderManagedUserLayouts(layouts) {
+  const body = document.getElementById('user-layouts-body');
+  if (!body) return;
+  const items = Array.isArray(layouts) ? layouts : [];
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="3" class="hint">No layouts found for this user.</td></tr>';
+    return;
+  }
+  body.innerHTML = items.map(layout => `
+    <tr data-layout-id="${escapeHtml(layout.id || '')}">
+      <td>${escapeHtml(layout.name || 'Untitled Layout')}</td>
+      <td>${escapeHtml(formatDate(layout.updatedAt || layout.createdAt || ''))}</td>
+      <td>
+        <div class="user-layout-actions">
+          <button class="btn btn-secondary btn-sm" data-user-layout-action="export" data-layout-id="${escapeHtml(layout.id || '')}">Export</button>
+          <button class="btn btn-danger btn-sm" data-user-layout-action="delete" data-layout-id="${escapeHtml(layout.id || '')}">Delete</button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+async function refreshManagedUserLayouts() {
+  const error = document.getElementById('user-layouts-error');
+  const btn = document.getElementById('btn-user-layouts-refresh');
+  error?.classList.add('hidden');
+  if (!managedLayoutsUser?.id) {
+    if (error) {
+      error.textContent = 'Select a valid user.';
+      error.classList.remove('hidden');
+    }
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Loading...';
+  try {
+    const layouts = await window.LayoutStore?.listForUser?.(managedLayoutsUser.id);
+    renderManagedUserLayouts(layouts || []);
+  } catch (err) {
+    if (error) {
+      error.textContent = err.message || 'Could not load user layouts.';
+      error.classList.remove('hidden');
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Refresh';
+  }
+}
+
+function openUserLayoutsModal() {
+  if (!selectedManagedUser?.id) {
+    alert('Select a user first.');
+    return;
+  }
+  managedLayoutsUser = selectedManagedUser;
+  document.getElementById('user-layouts-title').textContent = `User Layouts - ${selectedManagedUser.username}`;
+  document.getElementById('user-layouts-error')?.classList.add('hidden');
+  document.getElementById('user-layouts-body').innerHTML = '<tr><td colspan="3" class="hint">Loading layouts...</td></tr>';
+  document.getElementById('modal-user-layouts')?.classList.remove('hidden');
+  refreshManagedUserLayouts();
+}
+
 function formatLastLogin(lastLoginAt) {
   if (!lastLoginAt) return 'Never';
   try {
@@ -1013,9 +1123,16 @@ function formatLastLogin(lastLoginAt) {
 function renderUsersDirectory(users) {
   const body = document.getElementById('users-directory-body');
   if (!body) return;
-  const items = Array.isArray(users) ? users : [];
+  const q = (managedUsersSearchQuery || '').trim().toLowerCase();
+  const allItems = Array.isArray(users) ? users : [];
+  const items = q
+    ? allItems.filter(user => {
+      const hay = `${user.username || ''} ${user.fullName || ''} ${user.role || ''} ${user.active ? 'active' : 'inactive'}`.toLowerCase();
+      return hay.includes(q);
+    })
+    : allItems;
   if (!items.length) {
-    body.innerHTML = '<tr><td colspan="5" class="hint">No users found.</td></tr>';
+    body.innerHTML = `<tr><td colspan="5" class="hint">${q ? 'No users match your search.' : 'No users found.'}</td></tr>`;
     selectedManagedUser = null;
     return;
   }
@@ -1052,6 +1169,7 @@ async function refreshUsersDirectory() {
   try {
     const users = await window.AuthStore.listUsers(current.username, currentSessionPassword);
     users.sort((a, b) => String(a.username || '').localeCompare(String(b.username || '')));
+    managedUsersCache = users;
     if (selectedManagedUser?.id) {
       selectedManagedUser = users.find(u => u.id === selectedManagedUser.id) || null;
     }
@@ -1073,6 +1191,11 @@ function initAddUserEvents() {
   });
   document.getElementById('btn-user-add').addEventListener('click', openCreateUserModal);
   document.getElementById('btn-list-users').addEventListener('click', refreshUsersDirectory);
+  document.getElementById('users-search-input')?.addEventListener('input', (e) => {
+    managedUsersSearchQuery = e.target.value || '';
+    renderUsersDirectory(managedUsersCache);
+  });
+  document.getElementById('btn-user-layouts').addEventListener('click', openUserLayoutsModal);
 
   document.getElementById('btn-create-user-close').addEventListener('click', closeCreateUserModal);
   document.getElementById('btn-create-user-cancel').addEventListener('click', closeCreateUserModal);
@@ -1085,8 +1208,7 @@ function initAddUserEvents() {
     const id = row.dataset.userId;
     const rows = Array.from(document.querySelectorAll('#users-directory-body tr[data-user-id]'));
     rows.forEach(r => r.classList.toggle('selected', r === row));
-    selectedManagedUser = {
-      ...(selectedManagedUser || {}),
+    selectedManagedUser = managedUsersCache.find(u => u.id === id) || {
       id,
       username: row.children[0]?.textContent?.trim() || '',
       active: (row.children[4]?.textContent || '').trim().toLowerCase() === 'active',
@@ -1238,6 +1360,42 @@ function initAddUserEvents() {
     } finally {
       btn.disabled = false;
       btn.textContent = 'Save';
+    }
+  });
+
+  document.getElementById('btn-user-layouts-close')?.addEventListener('click', closeUserLayoutsModal);
+  document.getElementById('btn-user-layouts-cancel')?.addEventListener('click', closeUserLayoutsModal);
+  document.getElementById('btn-user-layouts-refresh')?.addEventListener('click', refreshManagedUserLayouts);
+  document.getElementById('modal-user-layouts')?.addEventListener('click', (e) => {
+    if (e.target === document.getElementById('modal-user-layouts')) closeUserLayoutsModal();
+  });
+  document.getElementById('user-layouts-body')?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-user-layout-action]');
+    if (!btn || !managedLayoutsUser?.id) return;
+    const action = btn.dataset.userLayoutAction;
+    const layoutId = btn.dataset.layoutId;
+    const error = document.getElementById('user-layouts-error');
+    error?.classList.add('hidden');
+    try {
+      const layouts = await window.LayoutStore?.listForUser?.(managedLayoutsUser.id);
+      const layout = (layouts || []).find(l => String(l.id) === String(layoutId));
+      if (!layout) throw new Error('Layout not found.');
+
+      if (action === 'export') {
+        exportLayoutData(layout);
+        return;
+      }
+      if (action === 'delete') {
+        if (!confirm(`Delete layout "${layout.name}" for user "${managedLayoutsUser.username}"?`)) return;
+        await window.LayoutStore?.removeForUser?.(layout.id, managedLayoutsUser.id);
+        showToast(`Deleted "${layout.name}".`);
+        await refreshManagedUserLayouts();
+      }
+    } catch (err) {
+      if (error) {
+        error.textContent = err.message || 'Could not complete action.';
+        error.classList.remove('hidden');
+      }
     }
   });
 }

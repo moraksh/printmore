@@ -205,7 +205,7 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
     if (el.type === 'table' && isDetailEl) {
       wrapper.style.height = 'auto';
       wrapper.style.overflow = 'visible';
-      buildTableDOM(wrapper, el, fieldValues, scale, detailOverride.rows);
+      buildTableDOM(wrapper, el, fieldValues, scale, detailOverride.rows, detailOverride.allRows || detailOverride.rows);
     } else {
       switch (el.type) {
         case 'text':     buildTextDOM(wrapper, el, fieldValues); break;
@@ -458,22 +458,25 @@ function buildBarcodeDOM(wrapper, el, fieldValues) {
   }
 }
 
-function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
+function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRows) {
   const tbl = el.table || { rows: 2, cols: 4, cells: [], theme: 'plain', borderMode: 'all' };
   const isDetail = tbl.detailMode === true;
+  const footerEnabled = tbl.footerEnabled === true;
   const cols = tbl.cols || 3;
   const cells = tbl.cells || [];
   const colWidths = tbl.colWidths || null;
   const style = el.style || {};
+  const aggregateRows = (allDetailRows && allDetailRows.length) ? allDetailRows : detailRows;
 
   // Detail mode: row 0 = header, rows 1..N = one per detailRows entry
   const dataRows = (detailRows && detailRows.length > 0) ? detailRows : null;
-  const rows = isDetail && dataRows
+  const baseRows = isDetail && dataRows
     ? dataRows.length + 1   // header + data rows
     : (tbl.rows || 3);
+  const rows = baseRows + (footerEnabled ? 1 : 0);
 
   const themes = {
-    'plain':       { headerBg: '#e8e8e8', headerColor: '#000000', rowBg: '#ffffff', altRowBg: '#f8f8f8' },
+    'plain':       { headerBg: '#ffffff', headerColor: '#000000', rowBg: '#ffffff', altRowBg: '#ffffff' },
     'dark-header': { headerBg: '#2d2d4e', headerColor: '#ffffff', rowBg: '#ffffff', altRowBg: '#f0f0f8' },
     'blue':        { headerBg: '#2a5298', headerColor: '#ffffff', rowBg: '#ffffff', altRowBg: '#eef3fb' },
     'green':       { headerBg: '#2d6a4f', headerColor: '#ffffff', rowBg: '#ffffff', altRowBg: '#eef7f2' },
@@ -489,6 +492,34 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
   const bw = Math.max(1, style.borderWidth !== undefined ? style.borderWidth : 1);
   const bs = style.borderStyle || 'solid';
   const colProps = tbl.colProps || [];
+  const toNumber = (value) => {
+    if (value === null || value === undefined) return null;
+    const normalized = String(value).replace(/,/g, '').trim();
+    if (!normalized) return null;
+    const num = Number(normalized);
+    return Number.isFinite(num) ? num : null;
+  };
+  const resolveDetailFieldForCol = (colIdx) => {
+    const rowOne = cells.find(cl => cl.row === 1 && cl.col === colIdx);
+    if (rowOne?.fieldName) return rowOne.fieldName;
+    const anyMapped = cells.find(cl => cl.col === colIdx && cl.row > 0 && cl.fieldName);
+    return anyMapped?.fieldName || '';
+  };
+  const computeFooterValue = (colIdx, cp) => {
+    const footerType = cp.footerType || 'none';
+    if (footerType === 'text') return cp.footerText || '';
+    if (footerType === 'sum') {
+      const fieldName = resolveDetailFieldForCol(colIdx);
+      if (!fieldName || !Array.isArray(aggregateRows) || !aggregateRows.length) return '';
+      const total = aggregateRows.reduce((sum, row) => {
+        const n = toNumber(row?.[fieldName]);
+        return n === null ? sum : sum + n;
+      }, 0);
+      if (!Number.isFinite(total)) return '';
+      return Number.isInteger(total) ? String(total) : total.toFixed(2);
+    }
+    return '';
+  };
 
   const tableEl = document.createElement('table');
   tableEl.style.cssText = `width:100%;border-collapse:collapse;table-layout:fixed;font-family:${style.fontFamily || 'Arial'};font-size:${style.fontSize || 10}pt;color:${style.color || '#000000'};`;
@@ -512,23 +543,38 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
     : Array(Math.max(tbl.rows || 3, 2)).fill(1);
   const rhSum = storedRH.reduce((s, h) => s + h, 0);
   // Convert to absolute mm if proportional
-  const rowHeightsMm = rhSum < 20
+  const rowHeightsBaseMm = rhSum < 20
     ? storedRH.map(h => (h / rhSum) * el.height)
     : storedRH.slice();
+  const footerRowMm = (Number.isFinite(tbl.footerRowHeight) && tbl.footerRowHeight > 0)
+    ? tbl.footerRowHeight
+    : (rowHeightsBaseMm[Math.max(1, rowHeightsBaseMm.length) - 1] || rowHeightsBaseMm[0] || 5);
+  const rowHeightsMm = footerEnabled ? rowHeightsBaseMm.concat([footerRowMm]) : rowHeightsBaseMm;
   const headerRowPx = rowHeightsMm[0] * scale;
   const dataRowPx   = rowHeightsMm[1] * scale;
 
   for (let r = 0; r < rows; r++) {
     const tr = document.createElement('tr');
     const isHeaderRow = r === 0;
+    const isFooterRow = footerEnabled && r === rows - 1;
 
     // Apply designer row height so PDF matches the designed layout
-    const rowHpx = isHeaderRow ? headerRowPx : dataRowPx;
+    const rowHpx = rowHeightsMm[Math.min(r, rowHeightsMm.length - 1)] * scale;
     tr.style.height = rowHpx + 'px';
 
+    let skipCols = 0;
     for (let c = 0; c < cols; c++) {
+      if (skipCols > 0) {
+        skipCols--;
+        continue;
+      }
       const td = document.createElement(isHeaderRow ? 'th' : 'td');
       const cp = colProps[c] || {};
+      const mergeNext = isFooterRow && cp.footerMergeNext === true && c < cols - 1;
+      if (mergeNext) {
+        td.colSpan = 2;
+        skipCols = 1;
+      }
       const colAlign = cp.textAlign || style.textAlign || 'left';
       const padLeft = cp.paddingLeft !== undefined ? cp.paddingLeft + 'px' : '5px';
       const padRight = cp.paddingRight !== undefined ? cp.paddingRight + 'px' : '5px';
@@ -544,6 +590,10 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
         td.style.backgroundColor = headerBg;
         td.style.color = headerColor;
         td.style.fontWeight = 'bold';
+      } else if (isFooterRow) {
+        td.style.backgroundColor = rowBg;
+        td.style.color = style.color || '#000000';
+        td.style.fontWeight = 'bold';
       } else {
         td.style.backgroundColor = ((r % 2) === 0) ? altRowBg : rowBg;
         td.style.color = style.color || '#000000';
@@ -556,17 +606,18 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
         if (r === 0) td.style.borderTop = `${bw}px ${bs} ${bc}`;
         if (r === rows - 1) td.style.borderBottom = `${bw}px ${bs} ${bc}`;
         if (c === 0) td.style.borderLeft = `${bw}px ${bs} ${bc}`;
-        if (c === cols - 1) td.style.borderRight = `${bw}px ${bs} ${bc}`;
+        if (c === cols - 1 || (mergeNext && c + 1 === cols - 1)) td.style.borderRight = `${bw}px ${bs} ${bc}`;
       } else if (borderMode === 'header-outer') {
         td.style.border = 'none';
         if (r === 0) td.style.borderBottom = `2px ${bs} ${bc}`;
+        if (isFooterRow) td.style.borderTop = `2px ${bs} ${bc}`;
       } else {
         td.style.border = 'none';
       }
 
       // Find cell definition from designer
       const cellDef = cells.find(cl => cl.row === r && cl.col === c);
-      const repeatingCellDef = isDetail && !isHeaderRow
+      const repeatingCellDef = isDetail && !isHeaderRow && !isFooterRow
         ? (cells.find(cl => cl.row === 1 && cl.col === c) || cellDef)
         : cellDef;
       const effectiveStyle = repeatingCellDef?.style || {};
@@ -582,6 +633,8 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
         if (cellDef?.content) td.textContent = cellDef.content;
         else if (cellDef?.fieldName) td.textContent = cellDef.fieldName;
         else td.textContent = `Col ${c + 1}`;
+      } else if (isFooterRow) {
+        td.textContent = computeFooterValue(c, cp);
       } else if (cp.barcode) {
         // Barcode column — resolve the cell value then render as barcode
         let cellValue = '';
@@ -597,7 +650,6 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows) {
           td.style.padding = '2px';
           td.style.textAlign = 'center';
           const HIRES = 3;
-          const rowHpx = isHeaderRow ? headerRowPx : dataRowPx;
           const fontSize = 8 * HIRES;
           const textAllow = cp.barcodeShowText !== false ? fontSize * 1.4 + HIRES * 2 : 0;
           const barHeight = Math.max(8, Math.round(rowHpx * HIRES - textAllow - HIRES * 4));
@@ -746,7 +798,7 @@ async function generatePDF(layout, fieldValues, detailRows) {
           const nextY = _detailStartYForPage(detailEl, page, pi);
           const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
         pageEls.push(repositioned);
-        detailOverride = { el: repositioned, rows: slice };
+        detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
       } else if (!hasData) {
         // No detail data — render table as designed
         pageEls.push(detailEl);
@@ -900,7 +952,7 @@ async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl)
           const nextY = _detailStartYForPage(detailEl, page, pi);
           const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
         pageEls.push(repositioned);
-        detailOverride = { el: repositioned, rows: slice };
+        detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
       } else if (!hasData) {
         pageEls.push(detailEl);
       }
