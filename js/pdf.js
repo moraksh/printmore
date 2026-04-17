@@ -830,9 +830,9 @@ async function generatePDF(layout, fieldValues, detailRows) {
 
       if (!detailEl || !hasData) {
         pageEls.push(el);
-      } else {
-        const overlaps = _elementOverlapsVerticalBand(el, detailBandTop, detailBandBottom);
-        if (isFirst || !overlaps) pageEls.push(el);
+      } else if (isFirst) {
+        // Body non-detail elements should remain on page 1 unless explicitly modeled as header/footer zones.
+        pageEls.push(el);
       }
     });
 
@@ -1000,9 +1000,9 @@ async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl)
       }
       if (!detailEl || !hasData) {
         pageEls.push(el);
-      } else {
-        const overlaps = _elementOverlapsVerticalBand(el, detailBandTop, detailBandBottom);
-        if (isFirst || !overlaps) pageEls.push(el);
+      } else if (isFirst) {
+        // Body non-detail elements should remain on page 1 unless explicitly modeled as header/footer zones.
+        pageEls.push(el);
       }
     });
 
