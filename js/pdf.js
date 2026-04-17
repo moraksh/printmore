@@ -91,8 +91,23 @@ function _isFooterActiveOnPage(page, pageIndex, totalPages) {
 
 function _detailStartYForPage(detailEl, page, pageIndex) {
   if (pageIndex === 0) return detailEl.y;
-  if (_isHeaderActiveOnPage(page, pageIndex)) return page.headerHeight || 0;
-  return page.marginTop ?? 15;
+
+  const marginTop = page.marginTop ?? 15;
+  const headerHeight = page.headerHeight || 0;
+
+  // Preserve the designer's vertical offset from the top of the body area.
+  // Body start on page 1 depends on whether header is active there.
+  const firstPageBodyStart = _isHeaderActiveOnPage(page, 0) ? headerHeight : marginTop;
+  const designedOffsetFromBodyStart = detailEl.y - firstPageBodyStart;
+
+  const currentPageBodyStart = _isHeaderActiveOnPage(page, pageIndex) ? headerHeight : marginTop;
+  return currentPageBodyStart + designedOffsetFromBodyStart;
+}
+
+function _elementOverlapsVerticalBand(el, bandTopMm, bandBottomMm) {
+  const top = el.y;
+  const bottom = el.y + el.height;
+  return top < bandBottomMm && bottom > bandTopMm;
 }
 
 /**
@@ -201,6 +216,9 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
     const wElPx = el.width * scale;
     const hElPx = el.height * scale;
     wrapper.style.cssText = `position:absolute;left:${xPx}px;top:${yPx}px;width:${wElPx}px;height:${hElPx}px;box-sizing:border-box;overflow:hidden;opacity:${el.style?.opacity !== undefined ? el.style.opacity : 1};`;
+    if (el.type === 'table') {
+      wrapper.style.overflow = 'visible';
+    }
 
     if (el.type === 'table' && isDetailEl) {
       wrapper.style.height = 'auto';
@@ -289,7 +307,8 @@ function applyTextStyles(el, domEl, style) {
   domEl.style.fontStyle = style.fontStyle || 'normal';
   domEl.style.textDecoration = style.textDecoration || 'none';
   domEl.style.color = style.color || '#000000';
-  domEl.style.textAlign = style.textAlign || 'left';
+  const ta = style.textAlign || 'left';
+  domEl.style.textAlign = ta;
   domEl.style.lineHeight = '1.3';
   domEl.style.wordBreak = 'break-word';
 
@@ -304,6 +323,9 @@ function applyTextStyles(el, domEl, style) {
   domEl.style.height = '100%';
   domEl.style.display = 'flex';
   domEl.style.alignItems = 'flex-start';
+  if (ta === 'center') domEl.style.justifyContent = 'center';
+  else if (ta === 'right') domEl.style.justifyContent = 'flex-end';
+  else domEl.style.justifyContent = 'flex-start';
   domEl.style.boxSizing = 'border-box';
 }
 
@@ -326,10 +348,9 @@ function buildFieldDOM(wrapper, el, fieldValues) {
 }
 
 function buildUserDOM(wrapper, el) {
+  const style = el.style || {};
   const inner = document.createElement('div');
-  inner.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;';
-  const align = el.style?.textAlign || 'left';
-  inner.style.justifyContent = align === 'center' ? 'center' : (align === 'right' ? 'flex-end' : 'flex-start');
+  applyTextStyles(el, inner, style);
   const user = window.AuthStore?.currentUser?.();
   inner.textContent = user?.username || '';
   wrapper.appendChild(inner);
@@ -364,15 +385,15 @@ function buildLineDOM(wrapper, el, scale) {
   const thickness = (style.borderWidth || 1);
   const direction = el.lineDirection || 'horizontal';
 
-  wrapper.style.display = 'flex';
-  wrapper.style.alignItems = 'center';
-  wrapper.style.justifyContent = 'center';
+  wrapper.style.display = 'block';
+  wrapper.style.position = 'absolute';
+  wrapper.style.overflow = 'hidden';
 
   const line = document.createElement('div');
   if (direction === 'horizontal') {
-    line.style.cssText = `width:100%;height:${thickness}px;background:${color};`;
+    line.style.cssText = `position:absolute;left:0;top:0;width:100%;height:${thickness}px;background:${color};`;
   } else {
-    line.style.cssText = `width:${thickness}px;height:100%;background:${color};`;
+    line.style.cssText = `position:absolute;left:0;top:0;width:${thickness}px;height:100%;background:${color};`;
   }
   wrapper.appendChild(line);
 }
@@ -523,6 +544,13 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
 
   const tableEl = document.createElement('table');
   tableEl.style.cssText = `width:100%;border-collapse:collapse;table-layout:fixed;font-family:${style.fontFamily || 'Arial'};font-size:${style.fontSize || 10}pt;color:${style.color || '#000000'};`;
+  if (!isDetail) {
+    tableEl.style.height = '100%';
+    tableEl.style.boxSizing = 'border-box';
+  }
+  if (borderMode === 'all' || borderMode === 'outer') {
+    tableEl.style.borderBottom = `${bw}px ${bs} ${bc}`;
+  }
 
   // colgroup for column widths
   if (colWidths && colWidths.length === cols) {
@@ -582,6 +610,7 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
       td.style.paddingBottom = '1px';
       td.style.paddingLeft = padLeft;
       td.style.paddingRight = padRight;
+      td.style.boxSizing = 'border-box';
       td.style.overflow = 'hidden';
       td.style.verticalAlign = 'middle';
       td.style.textAlign = colAlign;
@@ -724,9 +753,7 @@ async function generatePDF(layout, fieldValues, detailRows) {
   const scale = PDF_MM_TO_PX;
 
   const allElements = layout.elements || [];
-  const mt = page.marginTop ?? 15;
   const mb = page.marginBottom ?? 15;
-  const contentH = hMm - mt - mb; // usable height in mm (inside margins)
 
   const hEnabled = !!page.headerEnabled;
   const fEnabled = !!page.footerEnabled;
@@ -735,14 +762,9 @@ async function generatePDF(layout, fieldValues, detailRows) {
   const hPages = page.headerPages || 'all';
   const fPages = page.footerPages || 'all';
 
-  // Classify elements by zone
-  const headerEls = allElements.filter(el => _getElementZone(el, page, hMm) === 'header');
-  const footerEls = allElements.filter(el => _getElementZone(el, page, hMm) === 'footer');
-  const bodyEls   = allElements.filter(el => _getElementZone(el, page, hMm) === 'body');
-
   // Find detail table (first detail-mode table in body)
+  const bodyEls = allElements.filter(el => _getElementZone(el, page, hMm) === 'body');
   const detailEl = bodyEls.find(el => el.type === 'table' && el.table?.detailMode === true);
-  const staticBodyEls = bodyEls.filter(el => el !== detailEl);
 
   const hasData = detailEl && detailRows && detailRows.length > 0;
 
@@ -775,35 +797,44 @@ async function generatePDF(layout, fieldValues, detailRows) {
     const isLast  = pi === totalPages - 1;
     const slice   = pageSlices[pi];
 
-    // Decide which elements go on this page
+    // Build page elements in original designer order to preserve stacking/layering.
     const pageEls = [];
-
-    // Header
-    if (hEnabled && (hPages === 'all' || (hPages === 'first' && isFirst))) {
-      pageEls.push(...headerEls);
-    }
-
-    // Footer
-    if (fEnabled && (fPages === 'all' || (fPages === 'last' && isLast))) {
-      pageEls.push(...footerEls);
-    }
-
-    // Static body (only page 1)
-    if (isFirst) pageEls.push(...staticBodyEls);
-
-    // Detail table
     let detailOverride = null;
-    if (detailEl) {
+    const footerActive = fEnabled && (fPages === 'all' || (fPages === 'last' && isLast));
+    const detailBandTop = detailEl ? _detailStartYForPage(detailEl, page, pi) : 0;
+    const detailBandBottom = detailEl ? (hMm - mb - (footerActive ? fH : 0)) : 0;
+
+    allElements.forEach(el => {
+      const zone = _getElementZone(el, page, hMm);
+      if (zone === 'header') {
+        if (hEnabled && (hPages === 'all' || (hPages === 'first' && isFirst))) pageEls.push(el);
+        return;
+      }
+      if (zone === 'footer') {
+        if (fEnabled && (fPages === 'all' || (fPages === 'last' && isLast))) pageEls.push(el);
+        return;
+      }
+
+      // Body
+      if (el === detailEl) {
         if (hasData && slice !== null) {
           const nextY = _detailStartYForPage(detailEl, page, pi);
           const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
-        pageEls.push(repositioned);
-        detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
-      } else if (!hasData) {
-        // No detail data — render table as designed
-        pageEls.push(detailEl);
+          pageEls.push(repositioned);
+          detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
+        } else if (!hasData) {
+          pageEls.push(detailEl);
+        }
+        return;
       }
-    }
+
+      if (!detailEl || !hasData) {
+        pageEls.push(el);
+      } else {
+        const overlaps = _elementOverlapsVerticalBand(el, detailBandTop, detailBandBottom);
+        if (isFirst || !overlaps) pageEls.push(el);
+      }
+    });
 
     // Build DOM
     const pageDOM = _buildPageDOM(page, wMm, hMm, pageEls, fieldValues, scale, detailOverride, pi + 1, totalPages);
@@ -914,21 +945,20 @@ async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl)
   const allElements = layout.elements || [];
   const hEnabled = !!page.headerEnabled;
   const fEnabled = !!page.footerEnabled;
-  const hH  = hEnabled ? (page.headerHeight || 20) : 0;
-  const fH  = fEnabled ? (page.footerHeight || 15) : 0;
+  const mb = page.marginBottom ?? 15;
+  const hH = hEnabled ? (page.headerHeight || 20) : 0;
+  const fH = fEnabled ? (page.footerHeight || 15) : 0;
   const hPages = page.headerPages || 'all';
   const fPages = page.footerPages || 'all';
 
-  const headerEls     = allElements.filter(el => _getElementZone(el, page, hMm) === 'header');
-  const footerEls     = allElements.filter(el => _getElementZone(el, page, hMm) === 'footer');
   const bodyEls       = allElements.filter(el => _getElementZone(el, page, hMm) === 'body');
   const detailEl      = bodyEls.find(el => el.type === 'table' && el.table?.detailMode === true);
-  const staticBodyEls = bodyEls.filter(el => el !== detailEl);
   const hasData       = detailEl && detailRows && detailRows.length > 0;
 
   let pageSlices;
   if (hasData) {
-    pageSlices = _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm);
+    // Use print-scale slicing even for live preview so page breaks match exported PDF.
+    pageSlices = _buildPageSlices(detailEl, fieldValues, PDF_MM_TO_PX, detailRows, page, hMm);
   } else {
     pageSlices = [null];
   }
@@ -942,21 +972,39 @@ async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl)
     const slice   = pageSlices[pi];
 
     const pageEls = [];
-    if (hEnabled && (hPages === 'all' || (hPages === 'first' && isFirst))) pageEls.push(...headerEls);
-    if (fEnabled && (fPages === 'all' || (fPages === 'last'  && isLast)))  pageEls.push(...footerEls);
-    if (isFirst) pageEls.push(...staticBodyEls);
-
     let detailOverride = null;
-    if (detailEl) {
+    const footerActive = fEnabled && (fPages === 'all' || (fPages === 'last' && isLast));
+    const detailBandTop = detailEl ? _detailStartYForPage(detailEl, page, pi) : 0;
+    const detailBandBottom = detailEl ? (hMm - mb - (footerActive ? fH : 0)) : 0;
+
+    allElements.forEach(el => {
+      const zone = _getElementZone(el, page, hMm);
+      if (zone === 'header') {
+        if (hEnabled && (hPages === 'all' || (hPages === 'first' && isFirst))) pageEls.push(el);
+        return;
+      }
+      if (zone === 'footer') {
+        if (fEnabled && (fPages === 'all' || (fPages === 'last' && isLast))) pageEls.push(el);
+        return;
+      }
+      if (el === detailEl) {
         if (hasData && slice !== null) {
           const nextY = _detailStartYForPage(detailEl, page, pi);
           const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
-        pageEls.push(repositioned);
-        detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
-      } else if (!hasData) {
-        pageEls.push(detailEl);
+          pageEls.push(repositioned);
+          detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
+        } else if (!hasData) {
+          pageEls.push(detailEl);
+        }
+        return;
       }
-    }
+      if (!detailEl || !hasData) {
+        pageEls.push(el);
+      } else {
+        const overlaps = _elementOverlapsVerticalBand(el, detailBandTop, detailBandBottom);
+        if (isFirst || !overlaps) pageEls.push(el);
+      }
+    });
 
     if (totalPages > 1) {
       const lbl = document.createElement('div');

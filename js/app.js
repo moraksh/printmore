@@ -242,6 +242,67 @@ function showView(viewName) {
     target.classList.add('active');
   }
   currentView = viewName;
+  scheduleContextAutofocus();
+}
+
+function _isVisibleElement(el) {
+  if (!el) return false;
+  if (el.hidden) return false;
+  if (el.closest('.hidden')) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  return true;
+}
+
+function _firstEditableIn(scope) {
+  if (!scope) return null;
+  const query = [
+    'input:not([type="hidden"]):not([disabled]):not([readonly])',
+    'textarea:not([disabled]):not([readonly])',
+    'select:not([disabled])',
+  ].join(',');
+  const candidates = Array.from(scope.querySelectorAll(query));
+  return candidates.find(_isVisibleElement) || null;
+}
+
+function getActiveInputScope() {
+  const modals = Array.from(document.querySelectorAll('.modal-overlay:not(.hidden)'));
+  if (modals.length) return modals[modals.length - 1];
+  return document.querySelector('.view.active:not(.hidden)');
+}
+
+function scheduleContextAutofocus() {
+  setTimeout(() => {
+    const scope = getActiveInputScope();
+    if (!scope) return;
+    if (scope.id === 'view-designer') return;
+    const first = _firstEditableIn(scope);
+    if (first) first.focus({ preventScroll: true });
+  }, 0);
+}
+
+function triggerEnterNext(scope) {
+  if (!scope) return false;
+
+  if (scope.id === 'view-login') {
+    document.getElementById('login-form')?.requestSubmit();
+    return true;
+  }
+
+  if (scope.id === 'view-setup') {
+    const nextBtn = document.getElementById(setupStep === 1 ? 'btn-step1-next' : (setupStep === 2 ? 'btn-step2-next' : 'btn-create-layout'));
+    if (nextBtn && !nextBtn.disabled && _isVisibleElement(nextBtn)) {
+      nextBtn.click();
+      return true;
+    }
+  }
+
+  const primary = scope.querySelector('.form-actions .btn-primary:not([disabled]), .modal-footer .btn-primary:not([disabled])');
+  if (primary && _isVisibleElement(primary)) {
+    primary.click();
+    return true;
+  }
+  return false;
 }
 
 // ===== Home View =====
@@ -349,6 +410,7 @@ function showSetupStep(n) {
   document.getElementById('step-ind-2').classList.toggle('done', n > 2);
   document.getElementById('step-ind-3').classList.toggle('active', n === 3);
   if (n === 3) renderTemplateOptions();
+  scheduleContextAutofocus();
 }
 
 function toggleSetupCustomSize() {
@@ -557,11 +619,19 @@ function buildTemplateElements(template, layout) {
     10,
     Math.min(contentW * 0.8, (String(title).length * titleFont * 0.2) + 6)
   );
+  const titleX = Math.max(0, (contentW - titleWidthMm) / 2);
   const makeId = p => 'el-' + p + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 5);
   const baseStyle = { ...style, backgroundColor: 'transparent', borderWidth: 0, borderColor: '#000000', borderStyle: 'solid', opacity: 1 };
+  const metaStyle = { ...baseStyle, fontSize: 6, color: '#000000', textAlign: 'right' };
+  // Keep metadata anchored to the printable content area (inside margins).
+  const metaWidthMm = 45;
+  const metaX = Math.max(0, contentW - metaWidthMm);
+  const metaY0 = 0;
   const elements = [
-    { id: makeId('title'), type: 'text', x: toX(0), y: toY(0), width: toW(titleWidthMm), height: toH(8), content: title, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: titleFont, fontWeight: 'bold' } },
-    { id: makeId('user'), type: 'user', x: toX(contentW - 45), y: toY(1), width: toW(45), height: toH(6), content: '', fieldName: '', imageData: '', style: { ...baseStyle, fontSize: fs(8, 5), textAlign: 'right' } },
+    { id: makeId('meta-user'), type: 'user', x: toX(metaX), y: toY(metaY0), width: toW(metaWidthMm), height: toH(4), content: '', fieldName: '', imageData: '', style: { ...metaStyle } },
+    { id: makeId('meta-page'), type: 'pagenum', x: toX(metaX), y: toY(metaY0 + 4.4), width: toW(metaWidthMm), height: toH(4), content: '', fieldName: '', imageData: '', pagenumFormat: 'Page {n}', style: { ...metaStyle } },
+    { id: makeId('meta-date'), type: 'datetime', x: toX(metaX), y: toY(metaY0 + 8.8), width: toW(metaWidthMm), height: toH(4), content: '', fieldName: '', imageData: '', datetimeFormat: 'DD/MM/YYYY', style: { ...metaStyle } },
+    { id: makeId('title'), type: 'text', x: toX(titleX), y: toY(0), width: toW(titleWidthMm), height: toH(8), content: title, fieldName: '', imageData: '', style: { ...baseStyle, fontSize: titleFont, fontWeight: 'bold', textAlign: 'center', color: '#000000' } },
     { id: makeId('line'), type: 'line', x: toX(0), y: toY(12), width: toW(contentW), height: toH(2), lineDirection: 'horizontal', style: { ...baseStyle, borderWidth: 1, borderColor: '#000000' } },
   ];
   const addPair = (field, x, y, w = 86) => {
@@ -854,6 +924,7 @@ function openShareLayoutModal(layoutId) {
   document.getElementById('tab-share-layout-share')?.classList.toggle('hidden', !canShare);
   setShareLayoutTab(canShare ? 'share' : 'download');
   document.getElementById('modal-share-layout')?.classList.remove('hidden');
+  scheduleContextAutofocus();
 }
 
 // ===== Event wiring =====
@@ -1018,6 +1089,7 @@ function openAddUserModal() {
   document.getElementById('add-user-error').classList.add('hidden');
   document.getElementById('change-user-error')?.classList.add('hidden');
   document.getElementById('modal-add-user').classList.remove('hidden');
+  scheduleContextAutofocus();
   refreshUsersDirectory();
 }
 
@@ -1029,6 +1101,7 @@ function closeAddUserModal() {
 function openCreateUserModal() {
   document.getElementById('add-user-error').classList.add('hidden');
   document.getElementById('modal-create-user').classList.remove('hidden');
+  scheduleContextAutofocus();
 }
 
 function closeCreateUserModal() {
@@ -1042,6 +1115,7 @@ function openChangeUserModal(user) {
   document.getElementById('change-user-active').value = user.active ? 'true' : 'false';
   document.getElementById('change-user-error').classList.add('hidden');
   document.getElementById('modal-change-user').classList.remove('hidden');
+  scheduleContextAutofocus();
 }
 
 function closeChangeUserModal() {
@@ -1112,6 +1186,7 @@ function openUserLayoutsModal() {
   document.getElementById('user-layouts-error')?.classList.add('hidden');
   document.getElementById('user-layouts-body').innerHTML = '<tr><td colspan="3" class="hint">Loading layouts...</td></tr>';
   document.getElementById('modal-user-layouts')?.classList.remove('hidden');
+  scheduleContextAutofocus();
   refreshManagedUserLayouts();
 }
 
@@ -1415,6 +1490,7 @@ function openSmartUiModal() {
   setSmartUiTab('header');
   renderSmartRulesEditor();
   document.getElementById('modal-smart-ui')?.classList.remove('hidden');
+  scheduleContextAutofocus();
 }
 
 function closeSmartUiModal() {
@@ -1588,6 +1664,29 @@ function initSetupEvents() {
   });
 }
 
+function initEnterNavigation() {
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.defaultPrevented) return;
+    if (currentView === 'designer') return;
+
+    const target = e.target;
+    if (!target) return;
+    const tag = (target.tagName || '').toLowerCase();
+    if (target.isContentEditable) return;
+    if (tag === 'textarea') return;
+    if (tag === 'button') return;
+
+    const scope = getActiveInputScope();
+    if (!scope) return;
+    if (scope.id === 'view-home' || scope.id === 'view-run' || scope.id === 'view-livepreview') return;
+
+    if (triggerEnterNext(scope)) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  });
+}
+
 function initDesignerAppEvents() {
   document.getElementById('btn-designer-home').addEventListener('click', () => {
     if (designerInstance) {
@@ -1647,7 +1746,7 @@ function initDesignerAppEvents() {
     if (designerInstance) designerInstance.zoomOut();
   });
 
-  document.getElementById('btn-grid-toggle').addEventListener('click', () => {
+  document.getElementById('btn-grid-toggle')?.addEventListener('click', () => {
     if (designerInstance) designerInstance.toggleGrid();
   });
 
@@ -1741,6 +1840,7 @@ function openRunPreviewModal(layout) {
     '<div class="preview-placeholder"><div style="font-size:36px;margin-bottom:12px;">&#128196;</div><div>Enter data and click <strong>Preview</strong></div></div>';
 
   modal.classList.remove('hidden');
+  scheduleContextAutofocus();
 }
 
 function closeRunPreviewModal() {
@@ -2115,6 +2215,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initLoginEvents();
   initHomeEvents();
   initSetupEvents();
+  initEnterNavigation();
   initDesignerAppEvents();
   initRunEvents();
   initRunPreviewModalEvents();
@@ -2136,4 +2237,5 @@ document.addEventListener('DOMContentLoaded', async () => {
   const ready = await loadCurrentUserLayouts();
   if (!ready) return;
   renderHomeView();
+  scheduleContextAutofocus();
 });

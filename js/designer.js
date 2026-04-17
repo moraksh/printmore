@@ -18,6 +18,9 @@ class Designer {
       this.activeTool = 'select';
     this.zoom = 1;
     this.showGrid = true;
+    this.showCursorGuides = false;
+    this.cursorGuideH = null;
+    this.cursorGuideV = null;
 
     // Drag/resize state
     this.dragState = null;
@@ -109,6 +112,11 @@ class Designer {
       this.scrollArea.removeEventListener('scroll', this._boundRulerScroll);
       this._boundRulerScroll = null;
     }
+    this._setCursorGuidesVisible(false);
+    this.cursorGuideH?.remove();
+    this.cursorGuideV?.remove();
+    this.cursorGuideH = null;
+    this.cursorGuideV = null;
     // Clean up context menu
     this._hideContextMenu();
   }
@@ -285,6 +293,48 @@ class Designer {
     rulerV.appendChild(canvasV);
   }
 
+  _ensureCursorGuideElements() {
+    if (!this.pageCanvas) return;
+    if (!this.cursorGuideH || !this.cursorGuideH.isConnected) {
+      this.cursorGuideH = document.createElement('div');
+      this.cursorGuideH.className = 'cursor-guide-line horizontal';
+      this.pageCanvas.appendChild(this.cursorGuideH);
+    }
+    if (!this.cursorGuideV || !this.cursorGuideV.isConnected) {
+      this.cursorGuideV = document.createElement('div');
+      this.cursorGuideV.className = 'cursor-guide-line vertical';
+      this.pageCanvas.appendChild(this.cursorGuideV);
+    }
+  }
+
+  _setCursorGuidesVisible(visible) {
+    if (this.cursorGuideH) this.cursorGuideH.style.display = visible ? 'block' : 'none';
+    if (this.cursorGuideV) this.cursorGuideV.style.display = visible ? 'block' : 'none';
+  }
+
+  _toggleCursorGuides(forceValue = null) {
+    this.showCursorGuides = forceValue === null ? !this.showCursorGuides : Boolean(forceValue);
+    const btn = document.getElementById('btn-cursor-guides');
+    if (btn) btn.classList.toggle('active', this.showCursorGuides);
+    if (!this.showCursorGuides) this._setCursorGuidesVisible(false);
+  }
+
+  _updateCursorGuides(e) {
+    if (!this.showCursorGuides || !this.pageCanvas) return;
+    this._ensureCursorGuideElements();
+    const rect = this.pageCanvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const inside = x >= 0 && y >= 0 && x <= rect.width && y <= rect.height;
+    if (!inside) {
+      this._setCursorGuidesVisible(false);
+      return;
+    }
+    this.cursorGuideH.style.top = `${Math.round(y)}px`;
+    this.cursorGuideV.style.left = `${Math.round(x)}px`;
+    this._setCursorGuidesVisible(true);
+  }
+
   _syncRulersWithScroll() {
     if (!this.scrollArea) return;
     const hCanvas = document.querySelector('#ruler-h canvas');
@@ -392,16 +442,11 @@ class Designer {
   }
 
   _buildUserEl(domEl, el) {
-    const inner = document.createElement('div');
-    inner.style.width = '100%';
-    inner.style.height = '100%';
-    inner.style.display = 'flex';
-    inner.style.alignItems = 'center';
-    const align = el.style?.textAlign || 'left';
-    inner.style.justifyContent = align === 'center' ? 'center' : (align === 'right' ? 'flex-end' : 'flex-start');
+    domEl.classList.add('el-user');
+    this._applyTextStyle(domEl, el.style);
     const user = window.AuthStore?.currentUser?.();
-    inner.textContent = user?.username || '{User}';
-    domEl.appendChild(inner);
+    domEl.textContent = user?.username || '{User}';
+    domEl.style.padding = '1px';
   }
 
   _buildImageEl(domEl, el) {
@@ -436,8 +481,13 @@ class Designer {
     const color = style.borderColor || '#000000';
     const thickness = (style.borderWidth || 1);
     const direction = el.lineDirection || 'horizontal';
+    domEl.style.display = 'block';
+    domEl.style.position = 'absolute';
     const inner = document.createElement('div');
     inner.className = 'el-line-inner';
+    inner.style.position = 'absolute';
+    inner.style.left = '0';
+    inner.style.top = '0';
     inner.style.backgroundColor = color;
     if (direction === 'horizontal') {
       inner.style.width = '100%';
@@ -584,7 +634,7 @@ class Designer {
     domEl.style.display = 'grid';
     domEl.style.gridTemplateColumns = colWidths.map(w => (w / total * 100).toFixed(2) + '%').join(' ');
     domEl.style.gridTemplateRows = renderRowHeights.map(h => (h / rowTotal * 100).toFixed(2) + '%').join(' ');
-    domEl.style.overflow = 'hidden';
+    domEl.style.overflow = 'visible';
     domEl.style.position = 'relative';
 
     const style = el.style || {};
@@ -1135,6 +1185,8 @@ class Designer {
     this._updateToolButtons();
     this._initPropertiesEvents();
     this._initContextMenu();
+    this._toggleCursorGuides(false);
+    document.getElementById('btn-cursor-guides')?.addEventListener('click', () => this._toggleCursorGuides());
 
     // Inline page settings (shown when no element is selected)
     const inlinePageChange = () => {
@@ -1288,6 +1340,9 @@ class Designer {
   // ===== Canvas Events =====
     initCanvasEvents() {
       this.pageCanvas.addEventListener('mousedown', (e) => this.handleCanvasMouseDown(e));
+      this.pageCanvas.addEventListener('mouseleave', () => {
+        this._setCursorGuidesVisible(false);
+      });
       this.pageCanvas.addEventListener('contextmenu', (e) => {
         if (this.suppressNextContextMenu) {
           e.preventDefault();
@@ -1375,6 +1430,7 @@ class Designer {
   }
 
   handleCanvasMouseMove(e) {
+    this._updateCursorGuides(e);
     if (this.colResizeState) { this._performColResize(e); return; }
     if (this.rowResizeState) { this._performRowResize(e); return; }
     if (this.marqueeState) {
@@ -1619,14 +1675,20 @@ class Designer {
     }
   }
 
-  _estimateTextWidthMm(text, fontSizePt) {
+  _estimateTextWidthMm(text, styleOrFontSize) {
     const value = String(text || '');
-    const sizePt = parseFloat(fontSizePt) || 12;
+    const style = typeof styleOrFontSize === 'object'
+      ? (styleOrFontSize || {})
+      : { fontSize: styleOrFontSize };
+    const sizePt = parseFloat(style.fontSize) || 12;
     const sizePx = (sizePt * 96) / 72;
     if (!this._measureCanvas) this._measureCanvas = document.createElement('canvas');
     const ctx = this._measureCanvas.getContext('2d');
     if (!ctx) return Math.max(1, value.length) * (sizePt * 0.22);
-    ctx.font = `${sizePx}px Arial`;
+    const fontFamily = style.fontFamily || 'Arial';
+    const fontWeight = style.fontWeight || 'normal';
+    const fontStyle = style.fontStyle || 'normal';
+    ctx.font = `${fontStyle} ${fontWeight} ${sizePx}px ${fontFamily}`;
     const px = Math.max(1, ctx.measureText(value).width);
     return px / MM_TO_PX;
   }
@@ -1638,11 +1700,44 @@ class Designer {
     const displayText = el.type === 'field'
       ? `{${String(el.fieldName || '') || 'Field'}}`
       : String(el.content || 'Text');
-    const contentW = this._estimateTextWidthMm(displayText, fontSize);
-    const desiredW = Math.max(6, Math.min(120, contentW + 1.6));
-    const desiredH = Math.max(4.5, (fontSize * 0.3528) + 1.2);
+    const lines = displayText.split(/\r?\n/).filter(Boolean);
+    const longestLine = (lines.length ? lines : [displayText]).reduce((max, line) => {
+      const w = this._estimateTextWidthMm(line, style);
+      return Math.max(max, w);
+    }, 0);
+    const contentW = Math.max(1, longestLine);
+    const lineCount = Math.max(1, lines.length);
+    const lineHeightMm = (fontSize * 0.3528) * 1.2;
+    const desiredW = Math.max(6, Math.min(180, contentW + 1.6));
+    const desiredH = Math.max(4.5, (lineHeightMm * lineCount) + 1.2);
     el.width = desiredW;
     el.height = desiredH;
+  }
+
+  _estimateCharsFit(el) {
+    if (!el || (el.type !== 'text' && el.type !== 'field')) return null;
+    const style = el.style || {};
+    const sample = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const sampleWidthMm = this._estimateTextWidthMm(sample, style);
+    const avgCharMm = Math.max(0.5, sampleWidthMm / sample.length);
+    const borderMm = ((parseFloat(style.borderWidth) || 0) * 2) / MM_TO_PX;
+    const paddingMm = 2 / MM_TO_PX; // 1px left + 1px right
+    const usableMm = Math.max(1, (parseFloat(el.width) || 0) - borderMm - paddingMm);
+    return Math.max(1, Math.floor(usableMm / avgCharMm));
+  }
+
+  _refreshCharsFitInfo(el) {
+    const wrap = document.getElementById('prop-char-fit-wrap');
+    const input = document.getElementById('prop-char-fit');
+    if (!wrap || !input) return;
+    const isTextLike = !!el && (el.type === 'text' || el.type === 'field');
+    wrap.classList.toggle('hidden', !isTextLike);
+    if (!isTextLike) {
+      input.value = '-';
+      return;
+    }
+    const fit = this._estimateCharsFit(el);
+    input.value = fit ? String(fit) : '-';
   }
 
   // ===== Selection =====
@@ -1971,6 +2066,7 @@ class Designer {
     const pX = document.getElementById('prop-x');
     const pY = document.getElementById('prop-y');
     if (pW) { pW.value = el.width.toFixed(1); pH.value = el.height.toFixed(1); pX.value = el.x.toFixed(1); pY.value = el.y.toFixed(1); }
+    this._refreshCharsFitInfo(el);
   }
 
   _finishResize() {
@@ -2321,6 +2417,7 @@ class Designer {
     document.getElementById('prop-group-content').classList.toggle('hidden', !hasContent);
     document.getElementById('prop-content-text-wrap').classList.toggle('hidden', el.type !== 'text');
     document.getElementById('prop-field-name-wrap').classList.toggle('hidden', el.type !== 'field');
+    this._refreshCharsFitInfo(el);
 
     // DateTime
     document.getElementById('prop-group-datetime').classList.toggle('hidden', el.type !== 'datetime');
@@ -2626,6 +2723,7 @@ class Designer {
         domEl.style.width = this._mmToPx(el.width) + 'px';
         domEl.style.height = this._mmToPx(el.height) + 'px';
       }
+      this._refreshCharsFitInfo(el);
       this._debounceSave();
     };
 
@@ -2645,6 +2743,8 @@ class Designer {
       this.defaultStyle.color = fc;
       if (this.selectedId) {
         this.updateElementStyle(this.selectedId, { fontFamily: ff, fontSize: fs, color: fc });
+        const el = this._findElement(this.selectedId);
+        if (el) this._refreshCharsFitInfo(el);
       }
     };
     document.getElementById('prop-font-family').addEventListener('change', fontChange);
@@ -2790,6 +2890,7 @@ class Designer {
         domEl.style.height = this._mmToPx(el.height) + 'px';
       }
       this._renderResizeHandles(domEl, this.selectedId);
+      this._refreshCharsFitInfo(el);
       this._debounceSave();
     });
 
@@ -3083,16 +3184,29 @@ class Designer {
   // ===== Style / Content update =====
   updateElementStyle(id, styleProps) {
     const ids = this.selectedIds.length > 1 && this.selectedIds.includes(id) ? this.selectedIds : [id];
+    const shouldAutoFitText = ['fontSize', 'fontFamily', 'fontWeight', 'fontStyle', 'textDecoration']
+      .some(key => Object.prototype.hasOwnProperty.call(styleProps || {}, key));
     ids.forEach(itemId => {
       const el = this._findElement(itemId);
       if (!el) return;
       el.style = { ...el.style, ...styleProps };
+      if (shouldAutoFitText && (el.type === 'text' || el.type === 'field')) {
+        this._autoFitTextElement(el);
+      }
 
       const domEl = this.pageCanvas.querySelector(`[data-id="${itemId}"]`);
       if (!domEl) return;
+      if (shouldAutoFitText && (el.type === 'text' || el.type === 'field')) {
+        domEl.style.width = this._mmToPx(el.width) + 'px';
+        domEl.style.height = this._mmToPx(el.height) + 'px';
+      }
 
       this._applyStylesToDOM(domEl, el);
     });
+    if (this.selectedId) {
+      const selectedEl = this._findElement(this.selectedId);
+      if (selectedEl) this._refreshCharsFitInfo(selectedEl);
+    }
     this._applySelectionToDOM();
     this._debounceSave();
   }
@@ -3116,8 +3230,13 @@ class Designer {
         break;
       case 'line': {
         domEl.innerHTML = '';
+        domEl.style.display = 'block';
+        domEl.style.position = 'absolute';
         const inner = document.createElement('div');
         inner.className = 'el-line-inner';
+        inner.style.position = 'absolute';
+        inner.style.left = '0';
+        inner.style.top = '0';
         inner.style.backgroundColor = style.borderColor || '#000000';
         const dir = el.lineDirection || 'horizontal';
         inner.style.width = dir === 'horizontal' ? '100%' : (style.borderWidth || 1) + 'px';

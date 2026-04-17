@@ -402,6 +402,7 @@
       <span id="toolbar-layout-name" class="toolbar-layout-name">Layout Name</span>
     </div>
     <div class="toolbar-right">
+      <button class="btn btn-ghost toolbar-btn" id="btn-cursor-guides" title="Toggle Cursor Guides">&#10010; Guides</button>
       <button class="btn btn-ghost toolbar-btn" id="btn-undo" title="Undo (Ctrl+Z)">&#8634; Undo</button>
       <button class="btn btn-ghost toolbar-btn" id="btn-redo" title="Redo (Ctrl+Y)">&#8635; Redo</button>
       <span class="toolbar-divider"></span>
@@ -409,7 +410,6 @@
       <span id="zoom-label" class="zoom-label">100%</span>
       <button class="btn btn-ghost toolbar-btn" id="btn-zoom-in" title="Zoom In">&#43;</button>
       <span class="toolbar-divider"></span>
-      <button class="btn btn-ghost toolbar-btn" id="btn-grid-toggle" title="Toggle Grid">&#9783; Grid</button>
       <button class="btn btn-ghost toolbar-btn" id="btn-page-settings" title="Page Settings">&#9881; Page</button>
     </div>
   </div>
@@ -629,6 +629,10 @@
                 <select id="prop-field-name">
                   <option value="">-- select field --</option>
                 </select>
+              </div>
+              <div class="prop-field" id="prop-char-fit-wrap">
+                <label>Approx Chars Fit</label>
+                <input type="text" id="prop-char-fit" value="-" readonly />
               </div>
             </div>
 
