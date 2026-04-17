@@ -968,6 +968,9 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
   const attachmentBase64 = await blobToBase64(pdfBlob);
 
   let res;
+  const controller = new AbortController();
+  const timeoutMs = 30000;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     res = await fetch(apiUrl, {
       method: 'POST',
@@ -975,6 +978,7 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
         'Content-Type': 'application/json',
         'x-session-token': sessionToken,
       },
+      signal: controller.signal,
       body: JSON.stringify({
         to: cfg.recipients,
         subject,
@@ -987,11 +991,19 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
       }),
     });
   } catch (err) {
+    clearTimeout(timeoutId);
+    if (err?.name === 'AbortError') {
+      return {
+        ok: false,
+        message: 'Email send timed out. Please check mail server settings and try again.',
+      };
+    }
     return {
       ok: false,
       message: 'Error in email connection. Please contact administrator.',
     };
   }
+  clearTimeout(timeoutId);
 
   let payload = null;
   try { payload = await res.json(); } catch {}

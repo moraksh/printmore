@@ -79,10 +79,13 @@ async function sendViaSmtp(payload, provider) {
       user: smtpUser,
       pass: smtpPass,
     },
+    connectionTimeout: 15000,
+    greetingTimeout: 10000,
+    socketTimeout: 20000,
     tls: provider === 'microsoft' ? { ciphers: 'TLSv1.2', rejectUnauthorized: true } : undefined,
   });
 
-  const info = await transporter.sendMail({
+  const sendPromise = transporter.sendMail({
     from: fromEmail,
     to: payload.to.join(','),
     subject: payload.subject,
@@ -96,6 +99,12 @@ async function sendViaSmtp(payload, provider) {
       },
     ],
   });
+
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('SMTP send timed out. Check SMTP host/auth/firewall settings.')), 30000);
+  });
+
+  const info = await Promise.race([sendPromise, timeoutPromise]);
 
   return { providerId: info?.messageId || null };
 }
