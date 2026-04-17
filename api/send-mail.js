@@ -10,18 +10,44 @@ function parsePayload(req) {
   const htmlBody = String(body.body || '').trim() || 'Please find attached PDF.';
   const fileName = String(body.filename || 'layout.pdf').replace(/[^\w.\-]/g, '_');
   const attachmentBase64 = String(body.attachmentBase64 || '').trim();
+  const fileUrl = String(body.fileUrl || '').trim();
   const contentType = String(body.contentType || 'application/pdf').trim();
-  return { to, subject, htmlBody, fileName, attachmentBase64, contentType };
+  return { to, subject, htmlBody, fileName, attachmentBase64, fileUrl, contentType };
 }
 
 function validatePayload(payload) {
   if (!payload.to.length) return 'Recipients are required.';
   if (!payload.subject) return 'Subject is required.';
-  if (!payload.attachmentBase64) return 'PDF attachment is required.';
+  if (!payload.attachmentBase64 && !payload.fileUrl) return 'PDF attachment is required.';
   return '';
 }
 
-async function sendViaResend(payload) {
+async function resolveAttachmentBase64(payload) {
+  if (payload.attachmentBase64) return payload.attachmentBase64;
+  if (!payload.fileUrl) throw new Error('PDF attachment URL is required.');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  let response;
+  try {
+    response = await fetch(payload.fileUrl, { signal: controller.signal });
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err?.name === 'AbortError') {
+      throw new Error('Attachment download timed out.');
+    }
+    throw new Error('Could not download PDF attachment.');
+  }
+  clearTimeout(timeout);
+
+  if (!response.ok) {
+    throw new Error(`Could not download PDF attachment (${response.status}).`);
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return buffer.toString('base64');
+}
+
+async function sendViaResend(payload, attachmentBase64) {
   const resendApiKey = process.env.RESEND_API_KEY || '';
   const fromEmail = process.env.MAIL_FROM || '';
   if (!resendApiKey || !fromEmail) {
@@ -42,7 +68,7 @@ async function sendViaResend(payload) {
       attachments: [
         {
           filename: payload.fileName,
-          content: payload.attachmentBase64,
+          content: attachmentBase64,
           type: payload.contentType,
           disposition: 'attachment',
         },
@@ -58,7 +84,7 @@ async function sendViaResend(payload) {
   return { providerId: result?.id || null };
 }
 
-async function sendViaSmtp(payload, provider) {
+async function sendViaSmtp(payload, provider, attachmentBase64) {
   const fromEmail = process.env.MAIL_FROM || '';
   const smtpUser = process.env.SMTP_USER || '';
   const smtpPass = process.env.SMTP_PASS || '';
@@ -101,7 +127,7 @@ async function sendViaSmtp(payload, provider) {
     attachments: [
       {
         filename: payload.fileName,
-        content: payload.attachmentBase64,
+        content: attachmentBase64,
         encoding: 'base64',
         contentType: payload.contentType,
       },
@@ -171,11 +197,12 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    const attachmentBase64 = await resolveAttachmentBase64(payload);
     let result;
     if (provider === 'resend') {
-      result = await sendViaResend(payload);
+      result = await sendViaResend(payload, attachmentBase64);
     } else {
-      result = await sendViaSmtp(payload, provider);
+      result = await sendViaSmtp(payload, provider, attachmentBase64);
     }
 
     return res.status(200).json({

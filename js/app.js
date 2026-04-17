@@ -948,6 +948,47 @@ function blobToBase64(blob) {
   });
 }
 
+function getSupabaseClientForUpload() {
+  const cfg = window.PRINT_LAYOUT_CONFIG || {};
+  const supabaseCfg = cfg?.DATABASE?.SUPABASE || {};
+  if (!window.supabase?.createClient || !supabaseCfg?.URL || !supabaseCfg?.ANON_KEY) return null;
+  return window.supabase.createClient(supabaseCfg.URL, supabaseCfg.ANON_KEY);
+}
+
+async function uploadPdfForEmail(layout, pdfBlob) {
+  const client = getSupabaseClientForUpload();
+  if (!client) {
+    throw new Error('Supabase client not configured for email attachment upload.');
+  }
+
+  const bucket = 'printmore-email-temp';
+  const user = getCurrentUser();
+  const safeUser = String(user?.username || 'user').replace(/[^a-z0-9_\-]/gi, '_');
+  const safeLayout = String(layout?.id || 'layout').replace(/[^a-z0-9_\-]/gi, '_');
+  const fileName = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.pdf`;
+  const path = `${safeUser}/${safeLayout}/${fileName}`;
+
+  const { error: uploadError } = await client.storage.from(bucket).upload(path, pdfBlob, {
+    contentType: 'application/pdf',
+    upsert: false,
+    cacheControl: '60',
+  });
+  if (uploadError) throw new Error(uploadError.message || 'Could not upload PDF for email.');
+
+  const { data } = client.storage.from(bucket).getPublicUrl(path);
+  const fileUrl = data?.publicUrl || '';
+  if (!fileUrl) throw new Error('Could not create attachment URL for email.');
+
+  return {
+    bucket,
+    path,
+    fileUrl,
+    cleanup: async () => {
+      try { await client.storage.from(bucket).remove([path]); } catch {}
+    },
+  };
+}
+
 async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
   const cfg = getLayoutEmailSettings(layout);
   if (!cfg.recipients.length) {
@@ -965,7 +1006,12 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
   const subject = applyEmailTemplate(cfg.subject || `Layout ${layout?.name || ''}`, layout, fieldValues);
   const body = applyEmailTemplate(cfg.body || 'Please find attached PDF.', layout, fieldValues);
   const filename = `${(layout?.name || 'layout').replace(/[^a-z0-9_\-]/gi, '_')}_${Date.now()}.pdf`;
-  const attachmentBase64 = await blobToBase64(pdfBlob);
+  let uploaded = null;
+  try {
+    uploaded = await uploadPdfForEmail(layout, pdfBlob);
+  } catch (err) {
+    return { ok: false, message: err?.message || 'Could not prepare PDF attachment.' };
+  }
 
   let res;
   const controller = new AbortController();
@@ -984,7 +1030,7 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
         subject,
         body,
         filename,
-        attachmentBase64,
+        fileUrl: uploaded.fileUrl,
         contentType: 'application/pdf',
         layoutId: layout?.id,
         layoutName: layout?.name,
@@ -992,6 +1038,7 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
     });
   } catch (err) {
     clearTimeout(timeoutId);
+    await uploaded?.cleanup?.();
     if (err?.name === 'AbortError') {
       return {
         ok: false,
@@ -1008,8 +1055,10 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
   let payload = null;
   try { payload = await res.json(); } catch {}
   if (!res.ok || payload?.ok === false) {
+    await uploaded?.cleanup?.();
     return { ok: false, message: payload?.message || 'Error in email connection. Please contact administrator.' };
   }
+  await uploaded?.cleanup?.();
   return { ok: true, message: payload?.message || 'Email sent.' };
 }
 
