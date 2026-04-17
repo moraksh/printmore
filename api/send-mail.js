@@ -85,6 +85,14 @@ async function sendViaSmtp(payload, provider) {
     tls: provider === 'microsoft' ? { ciphers: 'TLSv1.2', rejectUnauthorized: true } : undefined,
   });
 
+  try {
+    await transporter.verify();
+  } catch (err) {
+    const code = err?.code ? ` (${err.code})` : '';
+    const response = err?.response ? ` ${err.response}` : '';
+    throw new Error(`SMTP verify failed${code}: ${err?.message || 'Unknown error.'}${response}`);
+  }
+
   const sendPromise = transporter.sendMail({
     from: fromEmail,
     to: payload.to.join(','),
@@ -101,10 +109,17 @@ async function sendViaSmtp(payload, provider) {
   });
 
   const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => reject(new Error('SMTP send timed out. Check SMTP host/auth/firewall settings.')), 30000);
+    setTimeout(() => reject(new Error('SMTP send timed out (ETIMEOUT). Check SMTP host/auth/firewall settings.')), 30000);
   });
 
-  const info = await Promise.race([sendPromise, timeoutPromise]);
+  let info;
+  try {
+    info = await Promise.race([sendPromise, timeoutPromise]);
+  } catch (err) {
+    const code = err?.code ? ` (${err.code})` : '';
+    const response = err?.response ? ` ${err.response}` : '';
+    throw new Error(`SMTP send failed${code}: ${err?.message || 'Unknown error.'}${response}`);
+  }
 
   return { providerId: info?.messageId || null };
 }
