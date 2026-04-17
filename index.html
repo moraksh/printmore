@@ -1048,6 +1048,7 @@
       <div class="form-actions" style="margin-top:16px;">
         <button class="btn btn-secondary hidden" id="btn-add-manual-row">+ Add Line</button>
         <button class="btn btn-primary" id="btn-generate-pdf">&#128196; Generate PDF</button>
+        <button class="btn btn-secondary hidden" id="btn-send-email">&#9993; Send Email</button>
       </div>
     </div>
   </main>
@@ -1167,6 +1168,7 @@
       <div class="modal-tabs">
         <button class="modal-tab active" data-share-tab="share" id="tab-share-layout-share">Share</button>
         <button class="modal-tab" data-share-tab="download">Download</button>
+        <button class="modal-tab" data-share-tab="email" id="tab-share-layout-email">Email</button>
       </div>
 
       <div class="user-tab-content active" id="share-layout-tab-share">
@@ -1180,10 +1182,36 @@
       <div class="user-tab-content" id="share-layout-tab-download">
         <p class="hint">Download this layout as a JSON file.</p>
       </div>
+
+      <div class="user-tab-content" id="share-layout-tab-email">
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="share-email-auto-send" />
+            Enable run automatically
+          </label>
+          <div class="hint">If enabled, every run sends PDF to maintained recipients automatically.</div>
+        </div>
+        <div class="form-group">
+          <label>Email Recipients</label>
+          <textarea id="share-email-recipients" rows="3" placeholder="one@company.com, two@company.com"></textarea>
+          <div class="hint">Use comma or new line to separate multiple email addresses.</div>
+        </div>
+        <div class="form-group">
+          <label>Email Subject</label>
+          <input type="text" id="share-email-subject" placeholder="Layout ${layoutName} - ${date}" />
+        </div>
+        <div class="form-group">
+          <label>Email Body</label>
+          <textarea id="share-email-body" rows="4" placeholder="Please find attached PDF."></textarea>
+          <div class="hint">Supported tokens: ${layoutName}, ${date}, ${time}, ${datetime}, ${user}</div>
+        </div>
+        <div id="share-email-error" class="error-text hidden"></div>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" id="btn-share-layout-cancel">Cancel</button>
       <button class="btn btn-secondary hidden" id="btn-share-layout-download">Download Layout</button>
+      <button class="btn btn-secondary hidden" id="btn-share-layout-email-save">Save Email</button>
       <button class="btn btn-primary" id="btn-share-layout-send">Share Layout</button>
     </div>
   </div>

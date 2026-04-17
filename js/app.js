@@ -37,11 +37,17 @@ let selectedManagedUser = null;
 // Parsed data storage for Run view
 let runParsedData = null;
 let manualRowCount = 1;
+let runLastPdfPayload = null;
 let smartRulesDraft = null;
 let homeSearchQuery = '';
 let managedUsersCache = [];
 let managedLayoutsUser = null;
 let managedUsersSearchQuery = '';
+
+// ===== Email API config =====
+// Optional override key; default route is /api/send-mail.
+const EMAIL_API_URL_KEY = 'printmore_email_api_url';
+const DEFAULT_EMAIL_API_URL = '/api/send-mail';
 
 function getCurrentUser() {
   return window.AuthStore ? window.AuthStore.currentUser() : null;
@@ -160,7 +166,9 @@ function exportLayout(id) {
 
 function exportLayoutData(layout) {
   if (!layout) return;
-  const json = JSON.stringify(layout, null, 2);
+  const safeLayout = JSON.parse(JSON.stringify(layout));
+  delete safeLayout.emailSettings;
+  const json = JSON.stringify(safeLayout, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -202,6 +210,8 @@ function importLayoutFromFile(file) {
       // Assign a fresh ID to avoid collisions
       data.id = generateId();
       data.importedAt = new Date().toISOString();
+      // Keep import behavior aligned with Share: email settings are not carried over.
+      delete data.emailSettings;
       saveLayout(data);
       renderHomeView();
       showToast('Layout "' + data.name + '" imported!');
@@ -747,6 +757,7 @@ function openRunView(layoutId) {
 
   // Reset state
   runParsedData = null;
+  runLastPdfPayload = null;
   const pasteArea = document.getElementById('run-paste-area');
   if (pasteArea) pasteArea.value = '';
   const parsedPreview = document.getElementById('run-parsed-preview');
@@ -762,6 +773,11 @@ function openRunView(layoutId) {
   const pasteTabContent = document.getElementById('run-tab-paste');
   if (pasteTabContent) pasteTabContent.classList.add('active');
   document.getElementById('btn-add-manual-row')?.classList.add('hidden');
+  const sendBtn = document.getElementById('btn-send-email');
+  if (sendBtn) {
+    sendBtn.classList.toggle('hidden', !shouldShowRunSendEmailButton(layout));
+    sendBtn.disabled = false;
+  }
 
   // Populate manual form
   const form = document.getElementById('run-fields-form');
@@ -871,6 +887,134 @@ function renderParsedPreview(data, fields) {
   }
 }
 
+function getLayoutEmailSettings(layout) {
+  let cfg = layout?.emailSettings || {};
+  if ((!cfg || typeof cfg !== 'object' || !Array.isArray(cfg.recipients)) && layout?.id) {
+    const stored = getLayoutById(layout.id);
+    cfg = stored?.emailSettings || cfg;
+  }
+  const recipients = Array.isArray(cfg.recipients)
+    ? cfg.recipients.map(v => String(v || '').trim()).filter(Boolean)
+    : [];
+  return {
+    autoSendOnRun: cfg.autoSendOnRun === true,
+    recipients,
+    subject: String(cfg.subject || '').trim(),
+    body: String(cfg.body || '').trim(),
+  };
+}
+
+function shouldShowRunSendEmailButton(layout) {
+  const cfg = getLayoutEmailSettings(layout);
+  return cfg.recipients.length > 0 && !cfg.autoSendOnRun;
+}
+
+function parseEmailRecipients(raw) {
+  return String(raw || '')
+    .split(/[\n,;]+/)
+    .map(v => v.trim())
+    .filter(Boolean);
+}
+
+function applyEmailTemplate(text, layout, fieldValues) {
+  const now = new Date();
+  const replacements = {
+    '${layoutName}': layout?.name || '',
+    '${date}': now.toLocaleDateString(),
+    '${time}': now.toLocaleTimeString(),
+    '${datetime}': now.toLocaleString(),
+    '${user}': getCurrentUser()?.username || '',
+  };
+  let out = String(text || '');
+  Object.entries(replacements).forEach(([token, value]) => {
+    out = out.split(token).join(value);
+  });
+  if (fieldValues && typeof fieldValues === 'object') {
+    out = window.applyFieldValues ? window.applyFieldValues(out, fieldValues) : out;
+  }
+  return out;
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const v = String(reader.result || '');
+      const base64 = v.includes(',') ? v.split(',')[1] : v;
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
+  const cfg = getLayoutEmailSettings(layout);
+  if (!cfg.recipients.length) {
+    return { ok: false, message: 'No recipients maintained for this layout.' };
+  }
+  const apiUrl = localStorage.getItem(EMAIL_API_URL_KEY) || DEFAULT_EMAIL_API_URL;
+  const sessionToken = window.AuthStore?.sessionToken?.() || '';
+  if (!apiUrl) {
+    return { ok: false, message: 'Email service is not configured.' };
+  }
+  if (!sessionToken) {
+    return { ok: false, message: 'Session expired. Please sign in again.' };
+  }
+
+  const subject = applyEmailTemplate(cfg.subject || `Layout ${layout?.name || ''}`, layout, fieldValues);
+  const body = applyEmailTemplate(cfg.body || 'Please find attached PDF.', layout, fieldValues);
+  const filename = `${(layout?.name || 'layout').replace(/[^a-z0-9_\-]/gi, '_')}_${Date.now()}.pdf`;
+  const attachmentBase64 = await blobToBase64(pdfBlob);
+
+  let res;
+  try {
+    res = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-session-token': sessionToken,
+      },
+      body: JSON.stringify({
+        to: cfg.recipients,
+        subject,
+        body,
+        filename,
+        attachmentBase64,
+        contentType: 'application/pdf',
+        layoutId: layout?.id,
+        layoutName: layout?.name,
+      }),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      message: 'Error in email connection. Please contact administrator.',
+    };
+  }
+
+  let payload = null;
+  try { payload = await res.json(); } catch {}
+  if (!res.ok || payload?.ok === false) {
+    return { ok: false, message: payload?.message || 'Error in email connection. Please contact administrator.' };
+  }
+  return { ok: true, message: payload?.message || 'Email sent.' };
+}
+
+async function maybeSendPdfAfterRun(layout, pdfBlob, fieldValues) {
+  const cfg = getLayoutEmailSettings(layout);
+  if (!cfg.recipients.length) return;
+
+  if (cfg.autoSendOnRun) {
+    const result = await sendPdfViaEmail(layout, pdfBlob, fieldValues);
+    if (result.ok) {
+      showToast(result.message || 'Email sent.');
+    } else {
+      alert(result.message || 'Error in email connection.');
+    }
+  }
+}
+
 async function shareLayoutToUser(layoutId, enteredUserId) {
   const current = getCurrentUser();
   if (!(current?.role === 'designer' || current?.role === 'super')) {
@@ -898,6 +1042,7 @@ async function shareLayoutToUser(layoutId, enteredUserId) {
     copy.userId = targetUser.id;
     copy.username = targetUser.username;
     delete copy.sharedWithUsernames;
+    delete copy.emailSettings;
 
     const result = await window.LayoutStore?.saveForUser?.(copy, targetUser);
     if (!result?.ok) throw (result?.error || new Error('Could not share layout.'));
@@ -913,8 +1058,10 @@ function setShareLayoutTab(tabName) {
   });
   document.getElementById('share-layout-tab-share')?.classList.toggle('active', tabName === 'share');
   document.getElementById('share-layout-tab-download')?.classList.toggle('active', tabName === 'download');
+  document.getElementById('share-layout-tab-email')?.classList.toggle('active', tabName === 'email');
   document.getElementById('btn-share-layout-send')?.classList.toggle('hidden', tabName !== 'share');
   document.getElementById('btn-share-layout-download')?.classList.toggle('hidden', tabName !== 'download');
+  document.getElementById('btn-share-layout-email-save')?.classList.toggle('hidden', tabName !== 'email');
 }
 
 function closeShareLayoutModal() {
@@ -924,11 +1071,19 @@ function closeShareLayoutModal() {
 
 function openShareLayoutModal(layoutId) {
   shareLayoutModalId = layoutId;
+  const layout = getLayoutById(layoutId);
+  const emailCfg = getLayoutEmailSettings(layout);
   document.getElementById('share-layout-user-id').value = '';
   document.getElementById('share-layout-error')?.classList.add('hidden');
+  document.getElementById('share-email-error')?.classList.add('hidden');
+  document.getElementById('share-email-auto-send').checked = emailCfg.autoSendOnRun;
+  document.getElementById('share-email-recipients').value = emailCfg.recipients.join(', ');
+  document.getElementById('share-email-subject').value = emailCfg.subject || '';
+  document.getElementById('share-email-body').value = emailCfg.body || '';
   const user = getCurrentUser();
   const canShare = user?.role === 'designer' || user?.role === 'super';
   document.getElementById('tab-share-layout-share')?.classList.toggle('hidden', !canShare);
+  document.getElementById('tab-share-layout-email')?.classList.toggle('hidden', !(user?.role === 'designer' || user?.role === 'super'));
   setShareLayoutTab(canShare ? 'share' : 'download');
   document.getElementById('modal-share-layout')?.classList.remove('hidden');
   scheduleContextAutofocus();
@@ -1033,6 +1188,23 @@ function initShareLayoutEvents() {
       return;
     }
     showToast(result.message || 'Layout shared.');
+    closeShareLayoutModal();
+  });
+
+  document.getElementById('btn-share-layout-email-save')?.addEventListener('click', () => {
+    if (!shareLayoutModalId) return;
+    const layout = getLayoutById(shareLayoutModalId);
+    if (!layout) return;
+    const recipients = parseEmailRecipients(document.getElementById('share-email-recipients')?.value || '');
+    const subject = document.getElementById('share-email-subject')?.value || '';
+    const body = document.getElementById('share-email-body')?.value || '';
+    const autoSendOnRun = !!document.getElementById('share-email-auto-send')?.checked;
+    const error = document.getElementById('share-email-error');
+    error?.classList.add('hidden');
+
+    layout.emailSettings = { recipients, subject, body, autoSendOnRun };
+    saveLayout(layout);
+    showToast('Email settings saved.');
     closeShareLayoutModal();
   });
 }
@@ -1880,6 +2052,36 @@ function _getRunPreviewData(layout) {
   return { fieldValues, detailRows };
 }
 
+function _getRunViewData(layout) {
+  const activeTab = document.querySelector('.run-tab.active')?.dataset?.tab || 'paste';
+  let fieldValues = {};
+  let detailRows = [];
+
+  if (activeTab === 'paste') {
+    if (!runParsedData) {
+      const text = document.getElementById('run-paste-area').value;
+      if (text.trim()) {
+        runParsedData = parsePasteData(text, layout.fields || []);
+      }
+    }
+    if (runParsedData && runParsedData.length > 0) {
+      fieldValues = { ...runParsedData[0] };
+      detailRows = runParsedData;
+    }
+  } else {
+    const rows = [];
+    document.querySelectorAll('#run-fields-form input[data-field]').forEach(input => {
+      const rowIndex = parseInt(input.dataset.row || '0', 10);
+      rows[rowIndex] = rows[rowIndex] || {};
+      rows[rowIndex][input.dataset.field] = input.value;
+    });
+    detailRows = rows.filter(row => row && Object.values(row).some(v => v !== ''));
+    fieldValues = detailRows[0] || {};
+  }
+
+  return { fieldValues, detailRows };
+}
+
 function initRunPreviewModalEvents() {
   // Tab switching
   document.querySelectorAll('#modal-run-tabs .run-tab').forEach(tab => {
@@ -1940,7 +2142,8 @@ function initRunPreviewModalEvents() {
     btn.disabled = true;
     btn.textContent = 'Generating\u2026';
     try {
-      await generatePDF(layout, fieldValues, detailRows);
+      const pdfBlob = await generatePDF(layout, fieldValues, detailRows);
+      await maybeSendPdfAfterRun(layout, pdfBlob, fieldValues);
     } catch (err) {
       console.error('PDF error:', err);
       alert('PDF generation failed: ' + err.message);
@@ -1997,46 +2200,54 @@ function initRunEvents() {
     const layoutId = currentLayoutId;
     const layout = getLayoutById(layoutId);
     if (!layout) { alert('Layout not found.'); return; }
-
-    const activeTab = document.querySelector('.run-tab.active')?.dataset?.tab || 'paste';
-    let fieldValues = {};
-    let detailRows = [];
-
-    if (activeTab === 'paste') {
-      // Auto-parse if not done yet
-      if (!runParsedData) {
-        const text = document.getElementById('run-paste-area').value;
-        if (text.trim()) {
-          runParsedData = parsePasteData(text, layout.fields || []);
-        }
-      }
-      if (runParsedData && runParsedData.length > 0) {
-        fieldValues = { ...runParsedData[0] };
-        detailRows = runParsedData;
-      }
-    } else {
-      // Manual mode
-      const rows = [];
-      document.querySelectorAll('#run-fields-form input[data-field]').forEach(input => {
-        const rowIndex = parseInt(input.dataset.row || '0', 10);
-        rows[rowIndex] = rows[rowIndex] || {};
-        rows[rowIndex][input.dataset.field] = input.value;
-      });
-      detailRows = rows.filter(row => row && Object.values(row).some(v => v !== ''));
-      fieldValues = detailRows[0] || {};
-    }
+    const { fieldValues, detailRows } = _getRunViewData(layout);
 
     const btn = document.getElementById('btn-generate-pdf');
     btn.disabled = true;
     btn.textContent = 'Generating\u2026';
     try {
-      await generatePDF(layout, fieldValues, detailRows);
+      const pdfBlob = await generatePDF(layout, fieldValues, detailRows);
+      runLastPdfPayload = { layoutId: layout.id, pdfBlob, fieldValues };
+      await maybeSendPdfAfterRun(layout, pdfBlob, fieldValues);
     } catch (err) {
       console.error('PDF generation error:', err);
       alert('PDF generation failed: ' + err.message);
     }
     btn.disabled = false;
     btn.innerHTML = '&#128196; Generate PDF';
+  });
+
+  document.getElementById('btn-send-email')?.addEventListener('click', async () => {
+    const layout = getLayoutById(currentLayoutId);
+    if (!layout) {
+      alert('Layout not found.');
+      return;
+    }
+    const cfg = getLayoutEmailSettings(layout);
+    if (!cfg.recipients.length) {
+      alert('No email recipients are maintained for this layout.');
+      return;
+    }
+    if (!runLastPdfPayload || runLastPdfPayload.layoutId !== layout.id || !runLastPdfPayload.pdfBlob) {
+      alert('Please generate PDF first, then click Send Email.');
+      return;
+    }
+
+    const btn = document.getElementById('btn-send-email');
+    btn.disabled = true;
+    btn.textContent = 'Sending\u2026';
+    try {
+      const result = await sendPdfViaEmail(layout, runLastPdfPayload.pdfBlob, runLastPdfPayload.fieldValues || {});
+      if (!result.ok) {
+        alert(result.message || 'Could not send email.');
+      } else {
+        showToast(result.message || 'Email sent.');
+      }
+    } catch (err) {
+      alert(err.message || 'Could not send email.');
+    }
+    btn.disabled = false;
+    btn.innerHTML = '&#9993; Send Email';
   });
 }
 
@@ -2180,7 +2391,8 @@ function initLivePreviewMode(layoutId) {
     btn.disabled = true;
     btn.textContent = 'Generating\u2026';
     try {
-      await generatePDF(lpLayout, fieldValues, detailRows);
+      const pdfBlob = await generatePDF(lpLayout, fieldValues, detailRows);
+      await maybeSendPdfAfterRun(lpLayout, pdfBlob, fieldValues);
     } catch (err) {
       alert('PDF error: ' + err.message);
     }
