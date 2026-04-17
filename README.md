@@ -6,7 +6,7 @@ A static browser app for designing printable layouts and generating PDFs from pa
 
 Stored in Supabase:
 
-- User ids and visible plaintext passwords
+- User ids and password hashes (not plaintext)
 - Layout name
 - Page settings
 - Field definitions
@@ -33,17 +33,28 @@ Without Supabase settings, layouts are stored in browser `localStorage`.
 2. Open the SQL editor.
 3. Run `supabase/schema.sql`.
 4. Copy your Project URL and anon/publishable key.
-5. Put them in `js/config.js`:
+5. Put them in `js/config.js` (single place for server/database settings):
 
 ```js
 window.PRINT_LAYOUT_CONFIG = {
-  SUPABASE_URL: 'https://your-project.supabase.co',
-  SUPABASE_ANON_KEY: 'your-anon-or-publishable-key',
-  SUPABASE_LAYOUTS_TABLE: 'layouts',
+  DATABASE: {
+    PROVIDER: 'supabase',
+    SUPABASE: {
+      URL: 'https://your-project.supabase.co',
+      ANON_KEY: 'your-anon-or-publishable-key',
+      LAYOUTS_TABLE: 'layouts',
+    },
+  },
 };
 ```
 
 Never put a `service_role` key in `js/config.js`.
+
+For future SQL Server migration, keep using `js/config.js` as the single control point:
+
+- Change `DATABASE.PROVIDER` to `sqlserver`
+- Set `DATABASE.SQLSERVER.API_BASE_URL` and related values
+- Keep frontend unchanged; integrate backend API implementation separately
 
 The SQL creates the super user:
 

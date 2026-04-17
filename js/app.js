@@ -32,7 +32,6 @@ let currentView = 'home';
 let currentLayoutId = null;
 let designerInstance = null;
 let shareLayoutModalId = null;
-let currentSessionPassword = '';
 let selectedManagedUser = null;
 
 // Parsed data storage for Run view
@@ -46,6 +45,10 @@ let managedUsersSearchQuery = '';
 
 function getCurrentUser() {
   return window.AuthStore ? window.AuthStore.currentUser() : null;
+}
+
+function hasSessionToken() {
+  return Boolean(window.AuthStore?.sessionToken?.());
 }
 
 function updateUserChrome() {
@@ -860,10 +863,12 @@ function initHomeEvents() {
       designerInstance.destroy();
       designerInstance = null;
     }
-    if (window.AuthStore) window.AuthStore.logout();
-    currentSessionPassword = '';
     selectedManagedUser = null;
-    showLoginView();
+    if (window.AuthStore) {
+      Promise.resolve(window.AuthStore.logout()).finally(() => showLoginView());
+    } else {
+      showLoginView();
+    }
   });
 
   document.getElementById('btn-add-user').addEventListener('click', () => {
@@ -976,7 +981,6 @@ function initLoginEvents() {
 
     try {
       await window.AuthStore.login(username, password);
-      currentSessionPassword = password;
       document.getElementById('login-password').value = '';
       await loadCurrentUserLayouts();
       const livePreviewId = new URLSearchParams(window.location.search).get('livepreview');
@@ -1158,7 +1162,7 @@ async function refreshUsersDirectory() {
     error.classList.remove('hidden');
     return;
   }
-  if (!currentSessionPassword) {
+  if (!hasSessionToken()) {
     error.textContent = 'Session expired. Please sign in again.';
     error.classList.remove('hidden');
     return;
@@ -1167,7 +1171,7 @@ async function refreshUsersDirectory() {
   btn.disabled = true;
   btn.textContent = 'Loading...';
   try {
-    const users = await window.AuthStore.listUsers(current.username, currentSessionPassword);
+    const users = await window.AuthStore.listUsers();
     users.sort((a, b) => String(a.username || '').localeCompare(String(b.username || '')));
     managedUsersCache = users;
     if (selectedManagedUser?.id) {
@@ -1232,7 +1236,7 @@ function initAddUserEvents() {
       alert('Select a user first.');
       return;
     }
-    if (!currentSessionPassword) {
+    if (!hasSessionToken()) {
       error.textContent = 'Session expired. Please sign in again.';
       error.classList.remove('hidden');
       return;
@@ -1244,7 +1248,7 @@ function initAddUserEvents() {
     if (!confirm(`Delete user "${selectedManagedUser.username}"?`)) return;
 
     try {
-      await window.AuthStore.deleteUser(current.username, currentSessionPassword, selectedManagedUser.username);
+      await window.AuthStore.deleteUser(selectedManagedUser.username);
       showToast(`User "${selectedManagedUser.username}" deleted.`);
       selectedManagedUser = null;
       await refreshUsersDirectory();
@@ -1270,7 +1274,7 @@ function initAddUserEvents() {
       error.classList.remove('hidden');
       return;
     }
-    if (!currentSessionPassword) {
+    if (!hasSessionToken()) {
       error.textContent = 'Session expired. Please sign in again.';
       error.classList.remove('hidden');
       return;
@@ -1284,9 +1288,9 @@ function initAddUserEvents() {
     btn.disabled = true;
     btn.textContent = 'Creating...';
     try {
-      await window.AuthStore.addUser(current.username, currentSessionPassword, username, fullName, password, role);
+      await window.AuthStore.addUser(username, fullName, password, role);
       if (document.getElementById('new-user-active').value === 'false') {
-        await window.AuthStore.setUserActive(current.username, currentSessionPassword, username, false);
+        await window.AuthStore.setUserActive(username, false);
       }
       document.getElementById('new-user-id').value = '';
       document.getElementById('new-user-name').value = '';
@@ -1324,7 +1328,7 @@ function initAddUserEvents() {
       error.classList.remove('hidden');
       return;
     }
-    if (!currentSessionPassword) {
+    if (!hasSessionToken()) {
       error.textContent = 'Session expired. Please sign in again.';
       error.classList.remove('hidden');
       return;
@@ -1336,7 +1340,7 @@ function initAddUserEvents() {
       return;
     }
     if (!newPassword && !statusChanged) {
-      error.textContent = 'Change password or update status.';
+      error.textContent = 'Change password or status.';
       error.classList.remove('hidden');
       return;
     }
@@ -1345,10 +1349,10 @@ function initAddUserEvents() {
     btn.textContent = 'Saving...';
     try {
       if (newPassword) {
-        await window.AuthStore.resetPassword(current.username, currentSessionPassword, username, newPassword);
+        await window.AuthStore.resetPassword(username, newPassword);
       }
       if (statusChanged) {
-        await window.AuthStore.setUserActive(current.username, currentSessionPassword, username, active);
+        await window.AuthStore.setUserActive(username, active);
       }
       document.getElementById('change-user-password').value = '';
       showToast(`User "${username}" updated.`);
@@ -1724,7 +1728,7 @@ function openRunPreviewModal(layout) {
     fields.forEach(f => {
       const row = document.createElement('div');
       row.className = 'field-input-row';
-      row.innerHTML = `<label class="field-input-label">${f}</label><input type="text" class="field-input-val" data-field="${f}" placeholder="${f}" />`;
+      row.innerHTML = `<label class="field-input-label">${escapeHtml(f)}</label><input type="text" class="field-input-val" data-field="${escapeHtml(f)}" placeholder="${escapeHtml(f)}" />`;
       form.appendChild(row);
     });
   }

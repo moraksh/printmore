@@ -10,13 +10,15 @@
 const LayoutStore = (() => {
   const LOCAL_KEY = 'printLayouts';
   const SMART_RULES_KEY = 'printmoreSmartRules';
-  const settingsTableName = 'app_settings';
   const cfg = window.PRINT_LAYOUT_CONFIG || {};
-  const tableName = cfg.SUPABASE_LAYOUTS_TABLE || 'layouts';
-  const hasSupabaseConfig = Boolean(cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY);
+  const dbCfg = cfg.DATABASE || {};
+  const provider = dbCfg.PROVIDER || 'supabase';
+  const supabaseCfg = dbCfg.SUPABASE || {};
+  const rpc = cfg.RPC || {};
+  const hasSupabaseConfig = provider === 'supabase' && Boolean(supabaseCfg.URL && supabaseCfg.ANON_KEY);
   const hasSupabaseClient = Boolean(window.supabase && window.supabase.createClient);
   const client = hasSupabaseConfig && hasSupabaseClient
-    ? window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY)
+    ? window.supabase.createClient(supabaseCfg.URL, supabaseCfg.ANON_KEY)
     : null;
   const channel = typeof BroadcastChannel !== 'undefined'
     ? new BroadcastChannel('printmore-layouts')
@@ -89,20 +91,26 @@ const LayoutStore = (() => {
     return layout && typeof layout === 'object' ? layout : null;
   }
 
+  function rpcName(key, fallback) {
+    return rpc[key] || fallback;
+  }
+
+  function getSessionToken() {
+    return window.AuthStore?.sessionToken?.() || '';
+  }
+
   async function init(user) {
     currentUser = user || currentUser;
     cache = readLocal();
-    if (!client || !currentUser) {
+    if (provider !== 'supabase' || !client || !currentUser || !getSessionToken()) {
       ready = true;
       return cache;
     }
 
     try {
-      const { data, error } = await client
-        .from(tableName)
-        .select('layout')
-        .eq('user_id', currentUser.id)
-        .order('updated_at', { ascending: false });
+      const { data, error } = await client.rpc(rpcName('LIST_LAYOUTS', 'list_printmore_layouts'), {
+        p_session_token: getSessionToken(),
+      });
 
       if (error) throw error;
 
@@ -121,18 +129,16 @@ const LayoutStore = (() => {
 
   async function loadSmartRules() {
     smartRulesCache = readLocalSmartRules();
-    if (!client) return smartRulesCache;
+    if (!client || !getSessionToken()) return smartRulesCache;
 
     try {
-      const { data, error } = await client
-        .from(settingsTableName)
-        .select('value')
-        .eq('key', SMART_RULES_KEY)
-        .maybeSingle();
+      const { data, error } = await client.rpc(rpcName('GET_SMART_RULES', 'get_printmore_smart_rules'), {
+        p_session_token: getSessionToken(),
+      });
 
       if (error) throw error;
-      if (data?.value) {
-        smartRulesCache = normalizeSmartRules(data.value);
+      if (data) {
+        smartRulesCache = normalizeSmartRules(data);
         writeLocalSmartRules(smartRulesCache);
       }
       lastError = null;
@@ -148,16 +154,13 @@ const LayoutStore = (() => {
     smartRulesCache = normalizeSmartRules(rules);
     writeLocalSmartRules(smartRulesCache);
 
-    if (!client) return { ok: true, mode: 'local' };
+    if (!client || !getSessionToken()) return { ok: true, mode: 'local' };
 
     try {
-      const { error } = await client
-        .from(settingsTableName)
-        .upsert({
-          key: SMART_RULES_KEY,
-          value: smartRulesCache,
-          updated_at: new Date().toISOString(),
-        });
+      const { error } = await client.rpc(rpcName('SET_SMART_RULES', 'set_printmore_smart_rules'), {
+        p_session_token: getSessionToken(),
+        p_rules: smartRulesCache,
+      });
 
       if (error) throw error;
       lastError = null;
@@ -201,18 +204,16 @@ const LayoutStore = (() => {
     }
     upsertLocal(cleanLayout);
 
-    if (!client || !currentUser) return { ok: true, mode: 'local' };
+    if (!client || !currentUser || !getSessionToken()) return { ok: true, mode: 'local' };
 
     try {
-      const { error } = await client
-        .from(tableName)
-        .upsert({
-          id: cleanLayout.id,
-          user_id: currentUser.id,
-          name: cleanLayout.name || 'Untitled Layout',
-          layout: cleanLayout,
-          updated_at: new Date().toISOString(),
-        });
+      const { error } = await client.rpc(rpcName('UPSERT_LAYOUT', 'upsert_printmore_layout'), {
+        p_session_token: getSessionToken(),
+        p_layout_id: cleanLayout.id,
+        p_name: cleanLayout.name || 'Untitled Layout',
+        p_layout: cleanLayout,
+        p_target_username: null,
+      });
 
       if (error) throw error;
       lastError = null;
@@ -225,36 +226,25 @@ const LayoutStore = (() => {
   }
 
   async function saveForUser(layout, targetUser) {
-    if (!client || !targetUser?.id) return { ok: false, error: new Error('Supabase is not configured.') };
+    if (!client || !targetUser?.username || !getSessionToken()) return { ok: false, error: new Error('Supabase is not configured.') };
     const cleanLayout = JSON.parse(JSON.stringify(layout || {}));
-    cleanLayout.userId = targetUser.id;
     cleanLayout.username = String(targetUser.username || '').toUpperCase();
 
     try {
-      const { data: existing, error: nameErr } = await client
-        .from(tableName)
-        .select('id')
-        .eq('user_id', targetUser.id)
-        .ilike('name', cleanLayout.name || '')
-        .limit(1);
-      if (nameErr) throw nameErr;
-      if (Array.isArray(existing) && existing.length > 0) {
-        return { ok: false, error: new Error(`Layout name "${cleanLayout.name}" already exists for ${cleanLayout.username}.`) };
-      }
-
-      const { error } = await client
-        .from(tableName)
-        .upsert({
-          id: cleanLayout.id,
-          user_id: targetUser.id,
-          name: cleanLayout.name || 'Untitled Layout',
-          layout: cleanLayout,
-          updated_at: new Date().toISOString(),
-        });
+      const { error } = await client.rpc(rpcName('UPSERT_LAYOUT', 'upsert_printmore_layout'), {
+        p_session_token: getSessionToken(),
+        p_layout_id: cleanLayout.id,
+        p_name: cleanLayout.name || 'Untitled Layout',
+        p_layout: cleanLayout,
+        p_target_username: cleanLayout.username,
+      });
       if (error) throw error;
       return { ok: true, mode: 'supabase' };
     } catch (err) {
       console.error('Supabase cross-user layout save failed.', err);
+      if (err?.code === '23505') {
+        return { ok: false, error: new Error(`Layout name "${cleanLayout.name}" already exists for ${cleanLayout.username}.`) };
+      }
       return { ok: false, error: err };
     }
   }
@@ -264,14 +254,13 @@ const LayoutStore = (() => {
     writeLocal(cache);
     notifyChange('delete', id);
 
-    if (!client || !currentUser) return { ok: true, mode: 'local' };
+    if (!client || !currentUser || !getSessionToken()) return { ok: true, mode: 'local' };
 
     try {
-      const { error } = await client
-        .from(tableName)
-        .delete()
-        .eq('id', id)
-        .eq('user_id', currentUser.id);
+      const { error } = await client.rpc(rpcName('DELETE_LAYOUT', 'delete_printmore_layout'), {
+        p_session_token: getSessionToken(),
+        p_layout_id: id,
+      });
       if (error) throw error;
       lastError = null;
       return { ok: true, mode: 'supabase' };
@@ -285,11 +274,12 @@ const LayoutStore = (() => {
   async function listForUser(userId) {
     if (!client) throw new Error('Supabase is not configured.');
     if (!userId) throw new Error('User id is required.');
-    const { data, error } = await client
-      .from(tableName)
-      .select('id,name,layout,created_at,updated_at,user_id')
-      .eq('user_id', userId)
-      .order('updated_at', { ascending: false });
+    const token = getSessionToken();
+    if (!token) throw new Error('Session expired. Please sign in again.');
+    const { data, error } = await client.rpc(rpcName('LIST_LAYOUTS_FOR_USER', 'list_printmore_layouts_for_user'), {
+      p_session_token: token,
+      p_target_user_id: userId,
+    });
     if (error) throw error;
     return (data || []).map(row => {
       const layout = normalizeLayout(row) || {};
@@ -305,11 +295,13 @@ const LayoutStore = (() => {
   async function removeForUser(layoutId, userId) {
     if (!client) throw new Error('Supabase is not configured.');
     if (!layoutId || !userId) throw new Error('Layout id and user id are required.');
-    const { error } = await client
-      .from(tableName)
-      .delete()
-      .eq('id', layoutId)
-      .eq('user_id', userId);
+    const token = getSessionToken();
+    if (!token) throw new Error('Session expired. Please sign in again.');
+    const { error } = await client.rpc(rpcName('DELETE_LAYOUT_FOR_USER', 'delete_printmore_layout_for_user'), {
+      p_session_token: token,
+      p_layout_id: layoutId,
+      p_target_user_id: userId,
+    });
     if (error) throw error;
     return { ok: true };
   }

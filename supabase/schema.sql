@@ -158,7 +158,7 @@ create or replace function public.authenticate_printmore_user(
 returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_user public.printmore_users;
@@ -190,7 +190,7 @@ create or replace function public.create_printmore_user(
 returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_admin public.printmore_users;
@@ -237,7 +237,7 @@ create or replace function public.reset_printmore_user_password(
 returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_admin public.printmore_users;
@@ -290,7 +290,7 @@ create or replace function public.set_printmore_user_active(
 returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_admin public.printmore_users;
@@ -340,7 +340,7 @@ create or replace function public.update_printmore_user(
 returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_admin public.printmore_users;
@@ -391,7 +391,7 @@ create or replace function public.find_printmore_user(
 returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
 language sql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
   select u.id, upper(u.username), u.full_name, u.role, u.is_super_user
   from public.printmore_users u
@@ -407,7 +407,7 @@ create or replace function public.list_printmore_users(
 returns table(id uuid, username text, full_name text, role text, is_super_user boolean, active boolean, last_login_at timestamptz)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_admin public.printmore_users;
@@ -446,7 +446,7 @@ create or replace function public.delete_printmore_user(
 returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_admin public.printmore_users;
@@ -498,3 +498,621 @@ grant execute on function public.update_printmore_user(text, text, text, text, b
 grant execute on function public.find_printmore_user(text) to anon;
 grant execute on function public.list_printmore_users(text, text) to anon;
 grant execute on function public.delete_printmore_user(text, text, text) to anon;
+
+-- ============================================================================
+-- SECURITY HARDENING (v2): hashed passwords + session tokens + RPC-only access
+-- ============================================================================
+
+create table if not exists public.printmore_sessions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.printmore_users(id) on delete cascade,
+  token_hash text not null unique,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  last_seen_at timestamptz not null default now(),
+  revoked_at timestamptz
+);
+
+create index if not exists printmore_sessions_user_idx
+  on public.printmore_sessions (user_id, created_at desc);
+
+alter table public.printmore_sessions enable row level security;
+alter table public.layouts enable row level security;
+alter table public.app_settings enable row level security;
+alter table public.printmore_users enable row level security;
+
+-- 1) Move plaintext passwords -> bcrypt hash (one-time migration)
+alter table public.printmore_users
+  add column if not exists password_hash text;
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'printmore_users'
+      and column_name = 'password'
+  ) then
+    execute $q$
+      update public.printmore_users
+set password_hash = crypt(password, gen_salt('bf'))
+      where password_hash is null
+        and password is not null
+    $q$;
+  end if;
+end
+$$;
+
+alter table public.printmore_users
+  alter column password_hash set not null;
+
+-- Optional hardening: remove plaintext storage column after migration
+alter table public.printmore_users
+  drop column if exists password;
+
+-- 2) Lock direct table access from anon/authenticated; only RPCs should be used
+revoke all on table public.printmore_users from anon, authenticated;
+revoke all on table public.layouts from anon, authenticated;
+revoke all on table public.app_settings from anon, authenticated;
+revoke all on table public.printmore_sessions from anon, authenticated;
+
+drop policy if exists "Allow app layout reads" on public.layouts;
+drop policy if exists "Allow app layout inserts" on public.layouts;
+drop policy if exists "Allow app layout updates" on public.layouts;
+drop policy if exists "Allow app layout deletes" on public.layouts;
+drop policy if exists "Allow app settings reads" on public.app_settings;
+drop policy if exists "Allow app settings writes" on public.app_settings;
+
+-- 3) Layout name uniqueness per user
+create unique index if not exists layouts_user_name_unique
+  on public.layouts (user_id, lower(name));
+
+-- 4) Replace old password-based RPC signatures
+drop function if exists public.authenticate_printmore_user(text, text);
+drop function if exists public.create_printmore_user(text, text, text, text, text, text);
+drop function if exists public.reset_printmore_user_password(text, text, text, text);
+drop function if exists public.set_printmore_user_active(text, text, text, boolean);
+drop function if exists public.update_printmore_user(text, text, text, text, boolean);
+drop function if exists public.find_printmore_user(text);
+drop function if exists public.list_printmore_users(text, text);
+drop function if exists public.delete_printmore_user(text, text, text);
+
+drop function if exists public._require_printmore_session(text, boolean);
+create or replace function public._require_printmore_session(
+  p_session_token text,
+  p_require_super boolean default false
+)
+returns public.printmore_users
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_user public.printmore_users;
+  v_hash text;
+begin
+  if trim(coalesce(p_session_token, '')) = '' then
+    raise exception 'Session token is required.';
+  end if;
+
+  v_hash := encode(digest(p_session_token, 'sha256'), 'hex');
+
+  select u.*
+  into v_user
+  from public.printmore_sessions s
+  join public.printmore_users u on u.id = s.user_id
+  where s.token_hash = v_hash
+    and s.revoked_at is null
+    and s.expires_at > now()
+    and u.active = true
+  order by s.created_at desc
+  limit 1;
+
+  if v_user.id is null then
+    raise exception 'Session expired. Please sign in again.';
+  end if;
+
+  update public.printmore_sessions
+  set last_seen_at = now()
+  where token_hash = v_hash;
+
+  if p_require_super and not v_user.is_super_user then
+    raise exception 'Only super user can perform this action.';
+  end if;
+
+  return v_user;
+end;
+$$;
+
+create or replace function public.authenticate_printmore_user(
+  p_username text,
+  p_password text
+)
+returns table(
+  id uuid,
+  username text,
+  full_name text,
+  role text,
+  is_super_user boolean,
+  session_token text
+)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_user public.printmore_users;
+  v_token text;
+  v_token_hash text;
+begin
+  select u.*
+  into v_user
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_username))
+    and u.active = true
+  limit 1;
+
+  if v_user.id is null then
+    return;
+  end if;
+
+  if v_user.password_hash <> crypt(coalesce(p_password, ''), v_user.password_hash) then
+    return;
+  end if;
+
+  update public.printmore_users
+  set last_login_at = now()
+  where public.printmore_users.id = v_user.id;
+
+  v_token := encode(gen_random_bytes(32), 'hex');
+  v_token_hash := encode(digest(v_token, 'sha256'), 'hex');
+
+  insert into public.printmore_sessions (user_id, token_hash, expires_at)
+  values (v_user.id, v_token_hash, now() + interval '12 hours');
+
+  return query
+  select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user, v_token;
+end;
+$$;
+
+create or replace function public.logout_printmore_user(
+  p_session_token text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_hash text;
+begin
+  if trim(coalesce(p_session_token, '')) = '' then
+    return;
+  end if;
+  v_hash := encode(digest(p_session_token, 'sha256'), 'hex');
+  update public.printmore_sessions
+  set revoked_at = coalesce(revoked_at, now())
+  where token_hash = v_hash;
+end;
+$$;
+
+create or replace function public.create_printmore_user(
+  p_session_token text,
+  p_username text,
+  p_full_name text,
+  p_password text,
+  p_role text default 'user'
+)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_admin public.printmore_users;
+  v_user public.printmore_users;
+  v_role text;
+begin
+  v_admin := public._require_printmore_session(p_session_token, true);
+
+  if trim(coalesce(p_username, '')) = '' or coalesce(p_password, '') = '' then
+    raise exception 'User id and password are required.';
+  end if;
+
+  v_role := lower(coalesce(nullif(trim(p_role), ''), 'user'));
+  if v_role not in ('user', 'designer', 'super') then
+    raise exception 'Invalid role.';
+  end if;
+
+  insert into public.printmore_users (username, full_name, password_hash, role, active, is_super_user)
+  values (
+    upper(trim(p_username)),
+    coalesce(nullif(trim(p_full_name), ''), upper(trim(p_username))),
+    crypt(p_password, gen_salt('bf')),
+    v_role,
+    true,
+    v_role = 'super'
+  )
+  returning * into v_user;
+
+  return query select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user;
+end;
+$$;
+
+create or replace function public.reset_printmore_user_password(
+  p_session_token text,
+  p_username text,
+  p_new_password text
+)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_admin public.printmore_users;
+  v_user public.printmore_users;
+begin
+  v_admin := public._require_printmore_session(p_session_token, true);
+
+  if trim(coalesce(p_username, '')) = '' or coalesce(p_new_password, '') = '' then
+    raise exception 'User id and new password are required.';
+  end if;
+
+  update public.printmore_users u
+  set password_hash = crypt(p_new_password, gen_salt('bf'))
+  where lower(u.username) = lower(trim(p_username))
+  returning * into v_user;
+
+  if v_user.id is null then
+    raise exception 'User id not found.';
+  end if;
+
+  return query select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user;
+end;
+$$;
+
+create or replace function public.set_printmore_user_active(
+  p_session_token text,
+  p_username text,
+  p_active boolean
+)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_admin public.printmore_users;
+  v_user public.printmore_users;
+begin
+  v_admin := public._require_printmore_session(p_session_token, true);
+
+  update public.printmore_users u
+  set active = p_active
+  where lower(u.username) = lower(trim(p_username))
+  returning * into v_user;
+
+  if v_user.id is null then
+    raise exception 'User id not found.';
+  end if;
+
+  return query select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user;
+end;
+$$;
+
+create or replace function public.update_printmore_user(
+  p_session_token text,
+  p_username text,
+  p_role text,
+  p_active boolean
+)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_admin public.printmore_users;
+  v_user public.printmore_users;
+  v_role text;
+begin
+  v_admin := public._require_printmore_session(p_session_token, true);
+
+  v_role := lower(coalesce(nullif(trim(p_role), ''), 'user'));
+  if v_role not in ('user', 'designer', 'super') then
+    raise exception 'Invalid role.';
+  end if;
+
+  update public.printmore_users u
+  set role = v_role,
+      is_super_user = (v_role = 'super'),
+      active = p_active
+  where lower(u.username) = lower(trim(p_username))
+  returning * into v_user;
+
+  if v_user.id is null then
+    raise exception 'User id not found.';
+  end if;
+
+  return query select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user;
+end;
+$$;
+
+create or replace function public.find_printmore_user(
+  p_session_token text,
+  p_username text
+)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_actor public.printmore_users;
+begin
+  v_actor := public._require_printmore_session(p_session_token, false);
+  return query
+  select u.id, upper(u.username), u.full_name, u.role, u.is_super_user
+  from public.printmore_users u
+  where lower(u.username) = lower(trim(p_username))
+    and u.active = true
+  limit 1;
+end;
+$$;
+
+create or replace function public.list_printmore_users(
+  p_session_token text
+)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean, active boolean, last_login_at timestamptz)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_admin public.printmore_users;
+begin
+  v_admin := public._require_printmore_session(p_session_token, true);
+
+  return query
+  select
+    u.id,
+    upper(u.username),
+    u.full_name,
+    u.role,
+    u.is_super_user,
+    u.active,
+    u.last_login_at
+  from public.printmore_users u
+  order by upper(u.username);
+end;
+$$;
+
+create or replace function public.delete_printmore_user(
+  p_session_token text,
+  p_username text
+)
+returns table(id uuid, username text, full_name text, role text, is_super_user boolean)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_admin public.printmore_users;
+  v_user public.printmore_users;
+begin
+  v_admin := public._require_printmore_session(p_session_token, true);
+
+  if lower(v_admin.username) = lower(trim(p_username)) then
+    raise exception 'You cannot delete your own user id.';
+  end if;
+
+  delete from public.printmore_users u
+  where lower(u.username) = lower(trim(p_username))
+  returning * into v_user;
+
+  if v_user.id is null then
+    raise exception 'User id not found.';
+  end if;
+
+  return query
+  select v_user.id, upper(v_user.username), v_user.full_name, v_user.role, v_user.is_super_user;
+end;
+$$;
+
+create or replace function public.list_printmore_layouts(
+  p_session_token text
+)
+returns table(id text, user_id uuid, name text, layout jsonb, created_at timestamptz, updated_at timestamptz)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_user public.printmore_users;
+begin
+  v_user := public._require_printmore_session(p_session_token, false);
+
+  return query
+  select l.id, l.user_id, l.name, l.layout, l.created_at, l.updated_at
+  from public.layouts l
+  where l.user_id = v_user.id
+  order by l.updated_at desc;
+end;
+$$;
+
+create or replace function public.list_printmore_layouts_for_user(
+  p_session_token text,
+  p_target_user_id uuid
+)
+returns table(id text, user_id uuid, name text, layout jsonb, created_at timestamptz, updated_at timestamptz)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_admin public.printmore_users;
+begin
+  v_admin := public._require_printmore_session(p_session_token, true);
+  return query
+  select l.id, l.user_id, l.name, l.layout, l.created_at, l.updated_at
+  from public.layouts l
+  where l.user_id = p_target_user_id
+  order by l.updated_at desc;
+end;
+$$;
+
+create or replace function public.upsert_printmore_layout(
+  p_session_token text,
+  p_layout_id text,
+  p_name text,
+  p_layout jsonb,
+  p_target_username text default null
+)
+returns table(id text, user_id uuid, name text, layout jsonb, created_at timestamptz, updated_at timestamptz)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_actor public.printmore_users;
+  v_target_id uuid;
+  v_row public.layouts;
+begin
+  v_actor := public._require_printmore_session(p_session_token, false);
+  v_target_id := v_actor.id;
+
+  if trim(coalesce(p_target_username, '')) <> '' then
+    if v_actor.role not in ('designer', 'super') and not v_actor.is_super_user then
+      raise exception 'Only designer or super user can share layouts.';
+    end if;
+    select u.id into v_target_id
+    from public.printmore_users u
+    where lower(u.username) = lower(trim(p_target_username))
+      and u.active = true
+    limit 1;
+    if v_target_id is null then
+      raise exception 'Invalid user id.';
+    end if;
+  end if;
+
+  insert into public.layouts as l (id, user_id, name, layout, updated_at)
+  values (p_layout_id, v_target_id, coalesce(nullif(trim(p_name), ''), 'Untitled Layout'), p_layout, now())
+  on conflict on constraint layouts_pkey do update
+  set name = excluded.name,
+      layout = excluded.layout,
+      updated_at = now()
+  where l.user_id = excluded.user_id
+  returning * into v_row;
+
+  if v_row.id is null then
+    raise exception 'Layout id conflict with another user.';
+  end if;
+
+  return query
+  select v_row.id, v_row.user_id, v_row.name, v_row.layout, v_row.created_at, v_row.updated_at;
+end;
+$$;
+
+create or replace function public.delete_printmore_layout(
+  p_session_token text,
+  p_layout_id text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_user public.printmore_users;
+begin
+  v_user := public._require_printmore_session(p_session_token, false);
+  delete from public.layouts
+  where public.layouts.id = p_layout_id
+    and public.layouts.user_id = v_user.id;
+end;
+$$;
+
+create or replace function public.delete_printmore_layout_for_user(
+  p_session_token text,
+  p_layout_id text,
+  p_target_user_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_admin public.printmore_users;
+begin
+  v_admin := public._require_printmore_session(p_session_token, true);
+  delete from public.layouts
+  where public.layouts.id = p_layout_id
+    and public.layouts.user_id = p_target_user_id;
+end;
+$$;
+
+create or replace function public.get_printmore_smart_rules(
+  p_session_token text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_user public.printmore_users;
+  v_value jsonb;
+begin
+  v_user := public._require_printmore_session(p_session_token, false);
+  select value into v_value
+  from public.app_settings
+  where key = 'printmoreSmartRules'
+  limit 1;
+  return coalesce(v_value, '{}'::jsonb);
+end;
+$$;
+
+create or replace function public.set_printmore_smart_rules(
+  p_session_token text,
+  p_rules jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_admin public.printmore_users;
+begin
+  v_admin := public._require_printmore_session(p_session_token, true);
+
+  insert into public.app_settings (key, value, updated_at)
+  values ('printmoreSmartRules', coalesce(p_rules, '{}'::jsonb), now())
+  on conflict (key) do update
+  set value = excluded.value,
+      updated_at = now();
+
+  return coalesce(p_rules, '{}'::jsonb);
+end;
+$$;
+
+-- 5) Re-grant only the safe RPC surface
+grant execute on function public.authenticate_printmore_user(text, text) to anon;
+grant execute on function public.logout_printmore_user(text) to anon;
+grant execute on function public.create_printmore_user(text, text, text, text, text) to anon;
+grant execute on function public.reset_printmore_user_password(text, text, text) to anon;
+grant execute on function public.set_printmore_user_active(text, text, boolean) to anon;
+grant execute on function public.update_printmore_user(text, text, text, boolean) to anon;
+grant execute on function public.find_printmore_user(text, text) to anon;
+grant execute on function public.list_printmore_users(text) to anon;
+grant execute on function public.delete_printmore_user(text, text) to anon;
+grant execute on function public.list_printmore_layouts(text) to anon;
+grant execute on function public.list_printmore_layouts_for_user(text, uuid) to anon;
+grant execute on function public.upsert_printmore_layout(text, text, text, jsonb, text) to anon;
+grant execute on function public.delete_printmore_layout(text, text) to anon;
+grant execute on function public.delete_printmore_layout_for_user(text, text, uuid) to anon;
+grant execute on function public.get_printmore_smart_rules(text) to anon;
+grant execute on function public.set_printmore_smart_rules(text, jsonb) to anon;
