@@ -472,16 +472,15 @@ const LAYOUT_TEMPLATES = [
   { id: 'blank', label: 'Blank Layout', meta: 'Start with an empty page.', pattern: 'blank' },
   { id: 'layout-1', label: 'Layout 1', meta: 'Header block with repeating line table.', pattern: 'receipt' },
   { id: 'layout-2', label: 'Layout 2', meta: 'Large item table with compact header.', pattern: 'pick' },
-  { id: 'layout-3', label: 'Layout 3', meta: 'Shipping-style header and carrier section.', pattern: 'ship' },
-  { id: 'layout-4', label: 'Layout 4', meta: 'Document summary with signature/footer area.', pattern: 'delivery' },
-  { id: 'layout-5', label: 'Layout 5', meta: 'Wide operational checklist style.', pattern: 'checklist' },
-  { id: 'smart', label: 'Layout 6', meta: 'Suggests a structure from your fields.', pattern: 'smart' },
+  { id: 'layout-5', label: 'Layout 3', meta: 'Wide operational checklist style.', pattern: 'checklist' },
 ];
 
 function renderTemplateOptions() {
   const container = document.getElementById('template-options');
   if (!container) return;
-  const selected = document.getElementById('layout-template').value || 'blank';
+  const current = document.getElementById('layout-template').value || 'blank';
+  const selected = LAYOUT_TEMPLATES.some(t => t.id === current) ? current : 'blank';
+  document.getElementById('layout-template').value = selected;
   container.innerHTML = '';
   LAYOUT_TEMPLATES.forEach(tpl => {
     const btn = document.createElement('button');
@@ -606,6 +605,8 @@ function buildTemplateElements(template, layout) {
   const mx = layout.page?.marginLeft ?? 5;
   const my = layout.page?.marginTop ?? 5;
   const contentW = Math.max(80, pageMm.width - (layout.page?.marginLeft ?? 5) - (layout.page?.marginRight ?? 5));
+  const contentH = Math.max(80, pageMm.height - (layout.page?.marginTop ?? 5) - (layout.page?.marginBottom ?? 5));
+  const contentHBase = contentH / sy;
   const toX = v => +(mx + v * sx).toFixed(2);
   const toY = v => +(my + v * sy).toFixed(2);
   const toW = v => +(v * sx).toFixed(2);
@@ -685,7 +686,13 @@ function buildTemplateElements(template, layout) {
     });
   }
   if (ctx.footer.length) {
-    addFieldGrid(ctx.footer, 0, (tableFields.length ? tableY + 16 : Math.max(headerEndY + 6, 48)), 2, 95, 6, 86);
+    const footerRows = Math.ceil(ctx.footer.length / 2);
+    const footerBlockHeight = Math.max(6, footerRows * 6);
+    const footerStartY = Math.max(
+      tableFields.length ? tableY + 16 : Math.max(headerEndY + 6, 48),
+      contentHBase - footerBlockHeight - 2
+    );
+    addFieldGrid(ctx.footer, 0, footerStartY, 2, 95, 6, 86);
   }
   return elements;
 }
