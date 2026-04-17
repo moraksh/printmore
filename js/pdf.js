@@ -8,6 +8,7 @@ const PDF_MM_TO_PX = 3.7795; // same scale as designer for rendering
 const PDF_HD_CANVAS_SCALE = 2.25;
 const PDF_LARGE_JOB_CANVAS_SCALE = 1.5;
 const PDF_IMAGE_QUALITY = 0.9;
+const PDF_CRITICAL_CANVAS_SCALE_MULTIPLIER = 1.15;
 
 function _sanitizePdfBaseName(name) {
   const cleaned = String(name || 'Layout')
@@ -846,6 +847,11 @@ async function generatePDF(layout, fieldValues, detailRows) {
     renderArea.innerHTML = '';
     renderArea.appendChild(pageDOM);
 
+    const hasImageOrBarcode = pageEls.some(el => el?.type === 'image' || el?.type === 'barcode');
+    const pageCanvasScale = hasImageOrBarcode
+      ? canvasScale * PDF_CRITICAL_CANVAS_SCALE_MULTIPLIER
+      : canvasScale;
+
     // Wait for images
     await Promise.all(
       Array.from(pageDOM.querySelectorAll('img')).map(
@@ -858,7 +864,7 @@ async function generatePDF(layout, fieldValues, detailRows) {
     let canvas;
     try {
       canvas = await html2canvas(pageDOM, {
-        scale: canvasScale,
+        scale: pageCanvasScale,
         useCORS: true,
         allowTaint: true,
         backgroundColor: '#ffffff',
@@ -871,12 +877,15 @@ async function generatePDF(layout, fieldValues, detailRows) {
       throw new Error(`html2canvas failed on page ${pi + 1}: ${err.message}`);
     }
 
-    const imgData = canvas.toDataURL('image/jpeg', PDF_IMAGE_QUALITY);
+    const useLossless = hasImageOrBarcode;
+    const imgData = useLossless
+      ? canvas.toDataURL('image/png')
+      : canvas.toDataURL('image/jpeg', PDF_IMAGE_QUALITY);
     if (pi === 0) {
-      doc.addImage(imgData, 'JPEG', 0, 0, wMm, hMm, undefined, 'FAST');
+      doc.addImage(imgData, useLossless ? 'PNG' : 'JPEG', 0, 0, wMm, hMm, undefined, useLossless ? 'NONE' : 'FAST');
     } else {
       doc.addPage([wMm, hMm], orientation);
-      doc.addImage(imgData, 'JPEG', 0, 0, wMm, hMm, undefined, 'FAST');
+      doc.addImage(imgData, useLossless ? 'PNG' : 'JPEG', 0, 0, wMm, hMm, undefined, useLossless ? 'NONE' : 'FAST');
     }
   }
 
