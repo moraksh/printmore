@@ -5,8 +5,9 @@
 'use strict';
 
 const PDF_MM_TO_PX = 3.7795; // same scale as designer for rendering
-const PDF_HD_CANVAS_SCALE = 3;
-const PDF_LARGE_JOB_CANVAS_SCALE = 2;
+const PDF_HD_CANVAS_SCALE = 2;
+const PDF_LARGE_JOB_CANVAS_SCALE = 1.5;
+const PDF_IMAGE_QUALITY = 0.85;
 
 function _sanitizePdfBaseName(name) {
   const cleaned = String(name || 'Layout')
@@ -794,7 +795,7 @@ async function generatePDF(layout, fieldValues, detailRows) {
 
   const { jsPDF } = window.jspdf;
   const orientation = page.orientation === 'landscape' ? 'l' : 'p';
-  const doc = new jsPDF({ orientation, unit: 'mm', format: [wMm, hMm], compress: false });
+  const doc = new jsPDF({ orientation, unit: 'mm', format: [wMm, hMm], compress: true });
 
   for (let pi = 0; pi < totalPages; pi++) {
     const isFirst = pi === 0;
@@ -870,12 +871,12 @@ async function generatePDF(layout, fieldValues, detailRows) {
       throw new Error(`html2canvas failed on page ${pi + 1}: ${err.message}`);
     }
 
-    const imgData = canvas.toDataURL('image/png');
+    const imgData = canvas.toDataURL('image/jpeg', PDF_IMAGE_QUALITY);
     if (pi === 0) {
-      doc.addImage(imgData, 'PNG', 0, 0, wMm, hMm, undefined, 'NONE');
+      doc.addImage(imgData, 'JPEG', 0, 0, wMm, hMm, undefined, 'FAST');
     } else {
       doc.addPage([wMm, hMm], orientation);
-      doc.addImage(imgData, 'PNG', 0, 0, wMm, hMm, undefined, 'NONE');
+      doc.addImage(imgData, 'JPEG', 0, 0, wMm, hMm, undefined, 'FAST');
     }
   }
 
