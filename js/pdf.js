@@ -94,13 +94,17 @@ function _detailStartYForPage(detailEl, page, pageIndex) {
 
   const marginTop = page.marginTop ?? 15;
   const headerHeight = page.headerHeight || 0;
+  const hasHeaderOnCurrentPage = _isHeaderActiveOnPage(page, pageIndex);
+
+  // If no header is shown on this page, start detail rows from the top body start.
+  if (!hasHeaderOnCurrentPage) return marginTop;
 
   // Preserve the designer's vertical offset from the top of the body area.
   // Body start on page 1 depends on whether header is active there.
   const firstPageBodyStart = _isHeaderActiveOnPage(page, 0) ? headerHeight : marginTop;
   const designedOffsetFromBodyStart = detailEl.y - firstPageBodyStart;
 
-  const currentPageBodyStart = _isHeaderActiveOnPage(page, pageIndex) ? headerHeight : marginTop;
+  const currentPageBodyStart = headerHeight;
   return currentPageBodyStart + designedOffsetFromBodyStart;
 }
 
