@@ -890,6 +890,8 @@ async function generatePDF(layout, fieldValues, detailRows) {
   const opened = window.open('', '_blank');
   if (opened) {
     const safeName = _escapeHtml(fileName);
+    const jsFileName = JSON.stringify(fileName);
+    const jsBlobUrl = JSON.stringify(blobUrl);
     opened.document.open();
     opened.document.write(`<!doctype html>
 <html>
@@ -901,16 +903,41 @@ async function generatePDF(layout, fieldValues, detailRows) {
     body{margin:0;font-family:Arial,sans-serif;background:#f2f3f7;}
     .bar{height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:#ffffff;border-bottom:1px solid #d9dbe3;box-sizing:border-box;}
     .name{font-size:13px;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70vw;}
-    .btn{display:inline-flex;align-items:center;justify-content:center;height:30px;padding:0 12px;border:1px solid #2563eb;border-radius:6px;background:#2563eb;color:#fff;font-size:12px;text-decoration:none;}
+    .btn{display:inline-flex;align-items:center;justify-content:center;height:30px;padding:0 12px;border:1px solid #2563eb;border-radius:6px;background:#2563eb;color:#fff;font-size:12px;text-decoration:none;cursor:pointer;}
     iframe{width:100%;height:calc(100vh - 44px);border:0;display:block;background:#fff;}
   </style>
 </head>
 <body>
   <div class="bar">
     <div class="name">${safeName}</div>
-    <a class="btn" href="${blobUrl}" download="${safeName}">Download PDF</a>
+    <button class="btn" id="downloadBtn" type="button">Download PDF</button>
   </div>
   <iframe src="${blobUrl}" title="${safeName}"></iframe>
+  <script>
+    (function () {
+      var fileName = ${jsFileName};
+      var blobUrl = ${jsBlobUrl};
+      var btn = document.getElementById('downloadBtn');
+      if (!btn) return;
+      btn.addEventListener('click', async function () {
+        try {
+          var resp = await fetch(blobUrl);
+          if (!resp.ok) throw new Error('Download source not available');
+          var blob = await resp.blob();
+          var localUrl = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = localUrl;
+          a.download = fileName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function () { URL.revokeObjectURL(localUrl); }, 5000);
+        } catch (e) {
+          alert('Could not download PDF. Please use browser save/download icon.');
+        }
+      });
+    })();
+  </script>
 </body>
 </html>`);
     opened.document.close();
