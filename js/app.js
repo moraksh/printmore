@@ -1062,17 +1062,29 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
   return { ok: true, message: payload?.message || 'Email sent.' };
 }
 
+function sendPdfViaEmailInBackground(layout, pdfBlob, fieldValues) {
+  const layoutName = layout?.name || 'Layout';
+  showToast(`Email sending started for ${layoutName}...`);
+  Promise.resolve()
+    .then(() => sendPdfViaEmail(layout, pdfBlob, fieldValues))
+    .then((result) => {
+      if (result?.ok) {
+        showToast(result.message || 'Email sent.');
+      } else {
+        alert(result?.message || 'Error in email connection. Please contact administrator.');
+      }
+    })
+    .catch((err) => {
+      alert(err?.message || 'Error in email connection. Please contact administrator.');
+    });
+}
+
 async function maybeSendPdfAfterRun(layout, pdfBlob, fieldValues) {
   const cfg = getLayoutEmailSettings(layout);
   if (!cfg.recipients.length) return;
 
   if (cfg.autoSendOnRun) {
-    const result = await sendPdfViaEmail(layout, pdfBlob, fieldValues);
-    if (result.ok) {
-      showToast(result.message || 'Email sent.');
-    } else {
-      alert(result.message || 'Error in email connection.');
-    }
+    sendPdfViaEmailInBackground(layout, pdfBlob, fieldValues);
   }
 }
 
@@ -2294,21 +2306,7 @@ function initRunEvents() {
       return;
     }
 
-    const btn = document.getElementById('btn-send-email');
-    btn.disabled = true;
-    btn.textContent = 'Sending\u2026';
-    try {
-      const result = await sendPdfViaEmail(layout, runLastPdfPayload.pdfBlob, runLastPdfPayload.fieldValues || {});
-      if (!result.ok) {
-        alert(result.message || 'Could not send email.');
-      } else {
-        showToast(result.message || 'Email sent.');
-      }
-    } catch (err) {
-      alert(err.message || 'Could not send email.');
-    }
-    btn.disabled = false;
-    btn.innerHTML = '&#9993; Send Email';
+    sendPdfViaEmailInBackground(layout, runLastPdfPayload.pdfBlob, runLastPdfPayload.fieldValues || {});
   });
 }
 

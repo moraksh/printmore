@@ -5,9 +5,9 @@
 'use strict';
 
 const PDF_MM_TO_PX = 3.7795; // same scale as designer for rendering
-const PDF_HD_CANVAS_SCALE = 2;
+const PDF_HD_CANVAS_SCALE = 2.25;
 const PDF_LARGE_JOB_CANVAS_SCALE = 1.5;
-const PDF_IMAGE_QUALITY = 0.85;
+const PDF_IMAGE_QUALITY = 0.9;
 
 function _sanitizePdfBaseName(name) {
   const cleaned = String(name || 'Layout')
