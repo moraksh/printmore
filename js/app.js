@@ -125,6 +125,31 @@ function formatDate(isoString) {
   }
 }
 
+function enableFontFamilyPreview(selectId) {
+  const select = document.getElementById(selectId);
+  if (!select) return;
+
+  const toCssFont = (family) => {
+    const f = String(family || '').trim();
+    if (!f) return 'sans-serif';
+    return `"${f.replace(/"/g, '\\"')}", sans-serif`;
+  };
+
+  Array.from(select.options || []).forEach(opt => {
+    const family = opt.value || opt.textContent;
+    opt.style.fontFamily = toCssFont(family);
+  });
+
+  const applySelectedFont = () => {
+    const selected = select.options?.[select.selectedIndex];
+    const family = selected?.value || selected?.textContent || 'sans-serif';
+    select.style.fontFamily = toCssFont(family);
+  };
+
+  select.addEventListener('change', applySelectedFont);
+  applySelectedFont();
+}
+
 // ===== LocalStorage =====
 function loadLayouts() {
   return window.LayoutStore ? window.LayoutStore.getAll() : [];
@@ -1982,7 +2007,7 @@ function initDesignerAppEvents() {
     await generatePDF(layout, fieldValues);
   });
 
-  document.getElementById('btn-run-preview').addEventListener('click', () => {
+  document.getElementById('btn-run-preview')?.addEventListener('click', () => {
     if (!designerInstance) return;
     openRunPreviewModal(designerInstance.getLayout());
   });
@@ -2507,6 +2532,9 @@ function initLivePreviewMode(layoutId) {
 
 // ===== Init =====
 document.addEventListener('DOMContentLoaded', async () => {
+  enableFontFamilyPreview('default-font-family');
+  enableFontFamilyPreview('prop-font-family');
+
   initLoginEvents();
   initHomeEvents();
   initSetupEvents();
