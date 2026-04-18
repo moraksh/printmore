@@ -10,6 +10,10 @@
         label: 'Draft (Small)',
         imageJpegQuality: 0.68,
         imageScale: 1.25,
+        tableRasterScale: 1.3,
+        tableRasterFormat: 'jpeg',
+        tableRasterQuality: 0.62,
+        barcodeRasterScale: 1.5,
         barcodeScale: 2,
         barcodeModuleWidth: 1.3,
         compress: true,
@@ -22,6 +26,10 @@
         label: 'Standard (Balanced)',
         imageJpegQuality: 0.8,
         imageScale: 1.6,
+        tableRasterScale: 1.9,
+        tableRasterFormat: 'png',
+        tableRasterQuality: 0.82,
+        barcodeRasterScale: 2,
         barcodeScale: 3,
         barcodeModuleWidth: 1.6,
         compress: true,
@@ -34,6 +42,10 @@
         label: 'Print HD (Sharp)',
         imageJpegQuality: 0.9,
         imageScale: 2,
+        tableRasterScale: 2.6,
+        tableRasterFormat: 'png',
+        tableRasterQuality: 0.92,
+        barcodeRasterScale: 2.6,
         barcodeScale: 4,
         barcodeModuleWidth: 2,
         compress: true,
@@ -74,4 +86,3 @@
 
   window.PRINTMORE_PDF_CONFIG = config;
 })();
-

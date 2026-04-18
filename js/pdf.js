@@ -8,6 +8,10 @@ const PDF_MM_TO_PX = 3.7795; // same scale as designer for rendering
 const PDF_HD_CANVAS_SCALE = 2.25;
 const PDF_LARGE_JOB_CANVAS_SCALE = 1.5;
 const PDF_IMAGE_QUALITY = 0.9;
+const PDF_BARCODE_CACHE_LIMIT = 600;
+
+const _pdfBarcodeSvgCache = new Map();
+const _pdfBarcodePngCache = new Map();
 
 const _pdfTelemetry = [];
 let _lastPdfTelemetry = null;
@@ -38,6 +42,22 @@ function _getPdfProfileConfig(profileId) {
     maxTotalBytes: 8 * 1024 * 1024,
     maxGenerationMs: 12000,
   };
+}
+
+function _normalizeRasterFormat(value, fallback = 'png') {
+  const raw = String(value || fallback).trim().toLowerCase();
+  return raw === 'jpeg' || raw === 'jpg' ? 'jpeg' : 'png';
+}
+
+function _getV2TableRasterOptions(profileCfg) {
+  const scale = Math.max(1, Number(profileCfg?.tableRasterScale || profileCfg?.imageScale || 2));
+  const format = _normalizeRasterFormat(profileCfg?.tableRasterFormat, 'png');
+  const quality = Math.max(0.45, Math.min(0.98, Number(profileCfg?.tableRasterQuality || profileCfg?.imageJpegQuality || 0.82)));
+  return { scale, format, quality };
+}
+
+function _getV2BarcodeRasterScale(profileCfg) {
+  return Math.max(1, Number(profileCfg?.barcodeRasterScale || 2));
 }
 
 function _recordPdfTelemetry(entry) {
@@ -219,6 +239,57 @@ function _detailStartYForPage(detailEl, page, pageIndex) {
   // For continuation pages, start table rows at the current page body start only.
   // This avoids inheriting first-page body content spacing (customer/invoice/total block).
   return hasHeaderOnCurrentPage ? headerHeight : marginTop;
+}
+
+function _touchBarcodeCache(cache, key, value) {
+  if (!cache || !key) return value;
+  if (cache.has(key)) cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > PDF_BARCODE_CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (!oldest) break;
+    cache.delete(oldest);
+  }
+  return value;
+}
+
+function _barcodeCacheKey(value, opts) {
+  return [
+    String(value ?? ''),
+    String(opts?.format || 'CODE128'),
+    opts?.displayValue !== false ? '1' : '0',
+    Number(opts?.fontSize || 0),
+    String(opts?.lineColor || '#000000'),
+    Number(opts?.width || 1),
+    Number(opts?.height || 0),
+    Number(opts?.margin || 0),
+    Number(opts?.textMargin || 0),
+    String(opts?.background || '#ffffff'),
+  ].join('|');
+}
+
+function _getOrCreateBarcodeSvgMarkup(value, opts) {
+  if (typeof JsBarcode === 'undefined') return null;
+  const key = _barcodeCacheKey(value, opts);
+  const cached = _pdfBarcodeSvgCache.get(key);
+  if (cached) {
+    _touchBarcodeCache(_pdfBarcodeSvgCache, key, cached);
+    return cached;
+  }
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  JsBarcode(svg, String(value || '0000000000'), opts || {});
+  const svgW = parseFloat(svg.getAttribute('width')) || 200;
+  const svgH = parseFloat(svg.getAttribute('height')) || 60;
+  if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+  const markup = svg.outerHTML;
+  return _touchBarcodeCache(_pdfBarcodeSvgCache, key, markup);
+}
+
+function _buildSvgNodeFromMarkup(markup) {
+  if (!markup) return null;
+  const holder = document.createElement('div');
+  holder.innerHTML = markup;
+  return holder.firstElementChild;
 }
 
 function _elementOverlapsVerticalBand(el, bandTopMm, bandBottomMm) {
@@ -563,10 +634,9 @@ function buildBarcodeDOM(wrapper, el, fieldValues) {
   // Keep runtime rendering model aligned with designer (SVG + contain fit).
   const hPx = Math.max(8, el.height * PDF_MM_TO_PX);
   try {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     const textAllowance = bc.showText !== false ? (bc.fontSize || 10) + 4 : 0;
     const barHeight = Math.max(8, Math.round(hPx - textAllowance - 6));
-    JsBarcode(svg, value, {
+    const markup = _getOrCreateBarcodeSvgMarkup(value, {
       format: bc.type || 'CODE128',
       displayValue: bc.showText !== false,
       fontSize: bc.fontSize || 10,
@@ -577,9 +647,8 @@ function buildBarcodeDOM(wrapper, el, fieldValues) {
       textMargin: 2,
       background: '#ffffff',
     });
-    const svgW = parseFloat(svg.getAttribute('width')) || 200;
-    const svgH = parseFloat(svg.getAttribute('height')) || 60;
-    if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+    const svg = _buildSvgNodeFromMarkup(markup);
+    if (!svg) throw new Error('barcode-svg-missing');
     svg.setAttribute('width', '100%');
     svg.setAttribute('height', '100%');
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
@@ -798,8 +867,7 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
           td.style.maxHeight = rowHpx + 'px';
           td.style.textAlign = 'center';
           try {
-            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-            JsBarcode(svg, cellValue, {
+            const markup = _getOrCreateBarcodeSvgMarkup(cellValue, {
               format: cp.barcodeType || 'CODE128',
               displayValue: cp.barcodeShowText !== false,
               height: 18,
@@ -810,9 +878,8 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
               background: '#ffffff',
               lineColor: '#000000',
             });
-            const svgW = parseFloat(svg.getAttribute('width')) || 100;
-            const svgH = parseFloat(svg.getAttribute('height')) || 28;
-            if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+            const svg = _buildSvgNodeFromMarkup(markup);
+            if (!svg) throw new Error('barcode-svg-missing');
             svg.setAttribute('width', '100%');
             svg.setAttribute('height', '100%');
             svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
@@ -1310,6 +1377,8 @@ async function _rasterizeImageDataForV2(imageData, profileCfg) {
 async function _rasterizeDomElementForV2(widthMm, heightMm, buildFn, options = {}) {
   const scale = Number(options.scale || 2);
   const opacity = options.opacity;
+  const outputType = _normalizeRasterFormat(options.imageType, 'png');
+  const outputQuality = Math.max(0.45, Math.min(0.98, Number(options.imageQuality || 0.82)));
   const wPx = Math.max(1, Math.round(widthMm * PDF_MM_TO_PX));
   const hPx = Math.max(1, Math.round(heightMm * PDF_MM_TO_PX));
 
@@ -1335,8 +1404,12 @@ async function _rasterizeDomElementForV2(widthMm, heightMm, buildFn, options = {
       width: wPx,
       height: hPx,
     });
+    const dataUrl = outputType === 'jpeg'
+      ? canvas.toDataURL('image/jpeg', outputQuality)
+      : canvas.toDataURL('image/png');
     return {
-      dataUrl: canvas.toDataURL('image/png'),
+      dataUrl,
+      format: outputType === 'jpeg' ? 'JPEG' : 'PNG',
       widthPx: canvas.width || wPx,
       heightPx: canvas.height || hPx,
     };
@@ -1396,8 +1469,7 @@ function _buildBarcodeDataForV2(el, value, bc, profileCfg) {
   const fontSize = (Number(bc?.fontSize) || 10) * scale;
   const textAllowance = (bc?.showText !== false) ? (fontSize + 4 * scale) : 0;
   const barHeight = Math.max(8 * scale, Math.round(hPx - textAllowance - 6 * scale));
-  const canvas = document.createElement('canvas');
-  JsBarcode(canvas, String(value || '0000000000'), {
+  const opts = {
     format: bc?.type || 'CODE128',
     displayValue: bc?.showText !== false,
     lineColor: bc?.textColor || '#000000',
@@ -1407,12 +1479,21 @@ function _buildBarcodeDataForV2(el, value, bc, profileCfg) {
     margin: 2 * scale,
     fontSize,
     textMargin: 2 * scale,
-  });
-  return {
+  };
+  const key = _barcodeCacheKey(value, opts);
+  const cached = _pdfBarcodePngCache.get(key);
+  if (cached) {
+    _touchBarcodeCache(_pdfBarcodePngCache, key, cached);
+    return cached;
+  }
+  const canvas = document.createElement('canvas');
+  JsBarcode(canvas, String(value || '0000000000'), opts);
+  const payload = {
     dataUrl: canvas.toDataURL('image/png'),
     width: canvas.width || 1,
     height: canvas.height || 1,
   };
+  return _touchBarcodeCache(_pdfBarcodePngCache, key, payload);
 }
 
 function _drawContainedPngInBox(doc, pngDataUrl, srcW, srcH, x, y, w, h, padding = 0.4) {
@@ -1467,11 +1548,15 @@ async function _drawV2BarcodeElement(doc, el, fieldValues, profileCfg) {
         host.style.position = 'relative';
         buildBarcodeDOM(host, localEl, fieldValues || {});
       },
-      { scale: 2, opacity: localEl.style?.opacity }
+      {
+        scale: _getV2BarcodeRasterScale(profileCfg),
+        opacity: localEl.style?.opacity,
+        imageType: 'png',
+      }
     );
     doc.addImage(
       raster.dataUrl,
-      'PNG',
+      raster.format || 'PNG',
       Number(el.x) || 0,
       Number(el.y) || 0,
       Math.max(0.1, Number(el.width) || 0),
@@ -1535,11 +1620,12 @@ async function _drawV2TableElement(doc, el, fieldValues, detailRows, allDetailRo
   const w = Math.max(0.1, Number(el.width) || 0);
   const h = Math.max(0.1, Number(el.height) || 0);
   const isDetail = el?.table?.detailMode === true;
+  const tableRaster = _getV2TableRasterOptions(profileCfg);
   try {
     // Detail tables can grow beyond designed table box for repeating rows.
     // Rasterize with dynamic content height so rows are not clipped in PDF pages.
     if (isDetail && Array.isArray(detailRows) && detailRows.length) {
-      const scale = 2;
+      const scale = tableRaster.scale;
       const wPx = Math.max(1, Math.round(w * PDF_MM_TO_PX));
       const fallbackHPx = Math.max(1, Math.round(h * PDF_MM_TO_PX));
       const host = document.createElement('div');
@@ -1580,7 +1666,19 @@ async function _drawV2TableElement(doc, el, fieldValues, detailRows, allDetailRo
           height: contentHPx,
         });
         const drawHmm = Math.max(0.1, contentHPx / PDF_MM_TO_PX);
-        doc.addImage(canvas.toDataURL('image/png'), 'PNG', x, y, w, drawHmm, undefined, 'FAST');
+        const imgData = tableRaster.format === 'jpeg'
+          ? canvas.toDataURL('image/jpeg', tableRaster.quality)
+          : canvas.toDataURL('image/png');
+        doc.addImage(
+          imgData,
+          tableRaster.format === 'jpeg' ? 'JPEG' : 'PNG',
+          x,
+          y,
+          w,
+          drawHmm,
+          undefined,
+          'FAST'
+        );
       } finally {
         document.body.removeChild(host);
       }
@@ -1597,9 +1695,14 @@ async function _drawV2TableElement(doc, el, fieldValues, detailRows, allDetailRo
         host.appendChild(inner);
         buildTableDOM(inner, el, fieldValues || {}, PDF_MM_TO_PX, detailRows || null, allDetailRows || detailRows || null);
       },
-      { scale: 2, opacity: el?.style?.opacity }
+      {
+        scale: tableRaster.scale,
+        opacity: el?.style?.opacity,
+        imageType: tableRaster.format,
+        imageQuality: tableRaster.quality,
+      }
     );
-    doc.addImage(raster.dataUrl, 'PNG', x, y, w, h, undefined, 'FAST');
+    doc.addImage(raster.dataUrl, raster.format || 'PNG', x, y, w, h, undefined, 'FAST');
     return;
   } catch {
     // Fail-soft: keep V2 resilient by drawing fallback border if rasterization fails.
