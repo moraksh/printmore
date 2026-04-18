@@ -93,7 +93,8 @@ function showLoginView(message) {
   }
 }
 
-async function loadCurrentUserLayouts() {
+async function loadCurrentUserLayouts(options = {}) {
+  const fastLogin = options.fastLogin !== false;
   const user = getCurrentUser();
   if (!user) {
     showLoginView();
@@ -101,9 +102,23 @@ async function loadCurrentUserLayouts() {
   }
 
   if (window.LayoutStore) {
-    await window.LayoutStore.init(user);
-    await window.LayoutStore.loadSmartRules?.();
+    const initResult = await window.LayoutStore.init(user, { deferRemote: fastLogin });
     updateStorageStatus();
+    if (fastLogin && initResult?.syncPromise) {
+      initResult.syncPromise.finally(() => {
+        updateStorageStatus();
+        if (currentView === 'home') renderHomeView();
+      });
+    }
+
+    const smartRulesPromise = window.LayoutStore.loadSmartRules?.();
+    if (fastLogin) {
+      Promise.resolve(smartRulesPromise).finally(() => {
+        if (currentView === 'home') renderHomeView();
+      });
+    } else {
+      await smartRulesPromise;
+    }
   }
   updateUserChrome();
   return true;

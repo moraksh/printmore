@@ -99,14 +99,11 @@ const LayoutStore = (() => {
     return window.AuthStore?.sessionToken?.() || '';
   }
 
-  async function init(user) {
-    currentUser = user || currentUser;
-    cache = readLocal();
+  async function _syncLayoutsFromSupabase() {
     if (provider !== 'supabase' || !client || !currentUser || !getSessionToken()) {
       ready = true;
       return cache;
     }
-
     try {
       const { data, error } = await client.rpc(rpcName('LIST_LAYOUTS', 'list_printmore_layouts'), {
         p_session_token: getSessionToken(),
@@ -117,14 +114,32 @@ const LayoutStore = (() => {
       cache = (data || []).map(normalizeLayout).filter(Boolean);
       writeLocal(cache);
       lastError = null;
+      notifyChange('sync', '*');
     } catch (err) {
       console.error('Supabase layout load failed; using local layouts.', err);
       lastError = err;
     } finally {
       ready = true;
     }
-
     return cache;
+  }
+
+  async function init(user, options = {}) {
+    const deferRemote = Boolean(options?.deferRemote);
+    currentUser = user || currentUser;
+    cache = readLocal();
+    if (provider !== 'supabase' || !client || !currentUser || !getSessionToken()) {
+      ready = true;
+      return cache;
+    }
+
+    if (deferRemote) {
+      ready = false;
+      const syncPromise = _syncLayoutsFromSupabase();
+      return { layouts: cache, syncPromise };
+    }
+
+    return _syncLayoutsFromSupabase();
   }
 
   async function loadSmartRules() {
