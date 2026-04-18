@@ -4,6 +4,19 @@
 
 'use strict';
 
+/**
+ * app.js quick orientation for first-time readers:
+ * - Handles screen/view transitions (login, home, designer, run, live preview).
+ * - Coordinates AuthStore + LayoutStore usage from UI actions.
+ * - Manages runtime data parsing for Run/Live (data stays in memory only).
+ * - Wires admin utilities (Maintain User, Smart UI rules, Share/Email modal).
+ *
+ * If you are new:
+ * 1) Start at DOMContentLoaded near bottom.
+ * 2) Then read init*Events functions (they bind all UI actions).
+ * 3) Follow showView(), openDesigner(), openRun() for primary app flow.
+ */
+
 // ===== Constants =====
 const STORAGE_KEY = 'printLayouts';
 
@@ -28,13 +41,14 @@ function getPageSizeMm(page) {
 }
 
 // ===== State =====
+// Current UI/session context (frontend-only state).
 let currentView = 'home';
 let currentLayoutId = null;
 let designerInstance = null;
 let shareLayoutModalId = null;
 let selectedManagedUser = null;
 
-// Parsed data storage for Run view
+// Runtime data for Run/Live flows (not persisted to DB).
 let runParsedData = null;
 let manualRowCount = 1;
 let runLastPdfPayload = null;
@@ -267,6 +281,7 @@ function parseFieldNames(text) {
 
 // ===== View Switching =====
 function showView(viewName) {
+  // Single entry point for switching screens so focus/visibility stays consistent.
   document.querySelectorAll('.view').forEach(v => {
     v.classList.remove('active');
     v.classList.add('hidden');
@@ -2609,9 +2624,11 @@ function initLivePreviewMode(layoutId) {
 
 // ===== Init =====
 document.addEventListener('DOMContentLoaded', async () => {
+  // 1) UI niceties that do not require session state.
   enableFontFamilyPreview('default-font-family');
   enableFontFamilyPreview('prop-font-family');
 
+  // 2) Bind all feature event handlers once.
   initLoginEvents();
   initHomeEvents();
   initSetupEvents();
@@ -2623,7 +2640,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSmartUiEvents();
   initShareLayoutEvents();
 
-  // Check if this tab is opened as a live preview
+  // 3) Live-preview tab boot path (?livepreview=<layoutId>).
   const urlParams = new URLSearchParams(window.location.search);
   const livePreviewId = urlParams.get('livepreview');
   if (livePreviewId) {
@@ -2634,6 +2651,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
 
+  // 4) Standard app boot path.
   const ready = await loadCurrentUserLayouts();
   if (!ready) return;
   renderHomeView();

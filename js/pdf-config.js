@@ -55,7 +55,7 @@
       },
     },
     defaults: {
-      engine: 'legacy',
+      engine: 'v2',
       profile: 'standard',
     },
     email: {

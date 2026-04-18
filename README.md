@@ -2,6 +2,10 @@
 
 A static browser app for designing printable layouts and generating PDFs from pasted or manually entered runtime data.
 
+For first-time code walkthrough, start with:
+
+- `CODEBASE_GUIDE.md`
+
 ## What Is Stored
 
 Stored in Supabase:
@@ -27,14 +31,9 @@ Open `index.html` directly in a browser, or serve the folder with any static fil
 
 Without Supabase settings, layouts are stored in browser `localStorage`.
 
-## PDF V2 (Safe Rollout)
+## PDF Engine (V2)
 
-PrintMore now has two PDF engines:
-
-- `Legacy` (current production behavior)
-- `V2 (Preview)` (new vector pipeline)
-
-V2 is behind a layout setting (`Page Setup -> PDF Engine`) and supports PDF profiles:
+PrintMore now runs on a single V2 PDF pipeline with profile-based output modes:
 
 - `Draft (Small)`
 - `Standard (Balanced)`
@@ -48,7 +47,7 @@ V2 rendering rules:
 
 Fallback safety:
 
-- If V2 `Print HD` exceeds size/time gates, it auto-falls back to `Standard` with user notice.
+- If `Print HD` exceeds size/time gates, it auto-falls back to `Standard` with user notice.
 
 Email size guard:
 

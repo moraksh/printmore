@@ -4,10 +4,19 @@
 
 'use strict';
 
+/**
+ * pdf.js quick orientation:
+ * - V2-only PDF pipeline.
+ * - Canonical page planning is shared by Live Preview and PDF export.
+ * - buildTableDOM() is the main visual table renderer used by both flows.
+ *
+ * Suggested reading order:
+ * 1) _buildCanonicalRenderPlan()
+ * 2) renderLayoutPreview()
+ * 3) generatePDFV2() -> generatePDF()
+ */
+
 const PDF_MM_TO_PX = 3.7795; // same scale as designer for rendering
-const PDF_HD_CANVAS_SCALE = 2.25;
-const PDF_LARGE_JOB_CANVAS_SCALE = 1.5;
-const PDF_IMAGE_QUALITY = 0.9;
 const PDF_BARCODE_CACHE_LIMIT = 600;
 
 const _pdfBarcodeSvgCache = new Map();
@@ -314,6 +323,8 @@ function _resolveLayoutPageSizeMm(layout) {
 }
 
 function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale = PDF_MM_TO_PX) {
+  // This planner is the core parity layer:
+  // both Live and PDF consume this exact page/element plan.
   const page = layout?.page || {};
   const { wMm, hMm } = _resolveLayoutPageSizeMm(layout);
   const allElements = layout?.elements || [];
@@ -1027,216 +1038,6 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
  * @param {Object} fieldValues
  * @param {Array}  [detailRows]
  */
-async function generatePDFLegacy(layout, fieldValues, detailRows) {
-  const page = layout.page;
-  const sizes = window.PAGE_SIZES;
-  let wMm;
-  let hMm;
-  if (page.size === 'custom') {
-    wMm = Math.max(20, parseFloat(page.customWidthMm ?? page.customWidth) || 210);
-    hMm = Math.max(20, parseFloat(page.customHeightMm ?? page.customHeight) || 297);
-  } else {
-    ({ width: wMm, height: hMm } = sizes[page.size] || sizes['A4']);
-  }
-  if (page.orientation === 'landscape') [wMm, hMm] = [hMm, wMm];
-  const scale = PDF_MM_TO_PX;
-
-  const allElements = layout.elements || [];
-  const mb = page.marginBottom ?? 15;
-
-  const hEnabled = !!page.headerEnabled;
-  const fEnabled = !!page.footerEnabled;
-  const hH = hEnabled ? (page.headerHeight || 20) : 0; // mm
-  const fH = fEnabled ? (page.footerHeight || 15) : 0; // mm
-  const hPages = page.headerPages || 'all';
-  const fPages = page.footerPages || 'all';
-
-  // Find detail table (first detail-mode table in body)
-  const bodyEls = allElements.filter(el => _getElementZone(el, page, hMm) === 'body');
-  const detailEl = bodyEls.find(el => el.type === 'table' && el.table?.detailMode === true);
-
-  const hasData = detailEl && detailRows && detailRows.length > 0;
-
-  // ── Pagination ──────────────────────────────────────────────────────────
-  // pageSlices[i] = array of detailRows for page i, or null if no pagination
-  let pageSlices;
-
-  if (hasData) {
-    pageSlices = _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm);
-  } else {
-    pageSlices = [null]; // single page, no detail pagination
-  }
-
-  const totalPages = pageSlices.length;
-  const detailCount = detailRows?.length || 0;
-  const canvasScale = (totalPages > 12 || detailCount > 250)
-    ? PDF_LARGE_JOB_CANVAS_SCALE
-    : PDF_HD_CANVAS_SCALE;
-
-  // ── Render each page ────────────────────────────────────────────────────
-  const renderArea = document.getElementById('pdf-render-area');
-  renderArea.innerHTML = '';
-
-  const { jsPDF } = window.jspdf;
-  const orientation = page.orientation === 'landscape' ? 'l' : 'p';
-  const doc = new jsPDF({ orientation, unit: 'mm', format: [wMm, hMm], compress: true });
-
-  for (let pi = 0; pi < totalPages; pi++) {
-    const isFirst = pi === 0;
-    const isLast  = pi === totalPages - 1;
-    const slice   = pageSlices[pi];
-
-    // Build page elements in original designer order to preserve stacking/layering.
-    const pageEls = [];
-    let detailOverride = null;
-    const footerActive = fEnabled && (fPages === 'all' || (fPages === 'last' && isLast));
-    const detailBandTop = detailEl ? _detailStartYForPage(detailEl, page, pi) : 0;
-    const detailBandBottom = detailEl ? (hMm - mb - (footerActive ? fH : 0)) : 0;
-
-    allElements.forEach(el => {
-      const zone = _getElementZone(el, page, hMm);
-      if (zone === 'header') {
-        if (hEnabled && (hPages === 'all' || (hPages === 'first' && isFirst))) pageEls.push(el);
-        return;
-      }
-      if (zone === 'footer') {
-        if (fEnabled && (fPages === 'all' || (fPages === 'last' && isLast))) pageEls.push(el);
-        return;
-      }
-
-      // Body
-      if (el === detailEl) {
-        if (hasData && slice !== null) {
-          const nextY = _detailStartYForPage(detailEl, page, pi);
-          const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
-          pageEls.push(repositioned);
-          detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
-        } else if (!hasData) {
-          pageEls.push(detailEl);
-        }
-        return;
-      }
-
-      if (!detailEl || !hasData) {
-        pageEls.push(el);
-      } else if (isFirst) {
-        // Body non-detail elements should remain on page 1 unless explicitly modeled as header/footer zones.
-        pageEls.push(el);
-      }
-    });
-
-    // Build DOM
-    const pageDOM = _buildPageDOM(page, wMm, hMm, pageEls, fieldValues, scale, detailOverride, pi + 1, totalPages);
-    renderArea.innerHTML = '';
-    renderArea.appendChild(pageDOM);
-
-    // Wait for images
-    await Promise.all(
-      Array.from(pageDOM.querySelectorAll('img')).map(
-        img => img.complete ? Promise.resolve()
-          : new Promise(r => { img.onload = r; img.onerror = r; })
-      )
-    );
-
-    // Capture
-    let canvas;
-    try {
-      canvas = await html2canvas(pageDOM, {
-        scale: canvasScale,
-        useCORS: true,
-        allowTaint: true,
-        backgroundColor: '#ffffff',
-        logging: false,
-        width: pageDOM.offsetWidth,
-        height: pageDOM.offsetHeight,
-      });
-    } catch (err) {
-      renderArea.innerHTML = '';
-      throw new Error(`html2canvas failed on page ${pi + 1}: ${err.message}`);
-    }
-
-    const imgData = canvas.toDataURL('image/jpeg', PDF_IMAGE_QUALITY);
-    if (pi === 0) {
-      doc.addImage(imgData, 'JPEG', 0, 0, wMm, hMm, undefined, 'FAST');
-    } else {
-      doc.addPage([wMm, hMm], orientation);
-      doc.addImage(imgData, 'JPEG', 0, 0, wMm, hMm, undefined, 'FAST');
-    }
-  }
-
-  renderArea.innerHTML = '';
-
-  // Open preview tab first with explicit Download button using the desired filename.
-  // If popup is blocked, fallback to direct download.
-  const pdfBlob = doc.output('blob');
-  const fileName = `${_sanitizePdfBaseName(layout?.name)}_${_pdfTimestampDDMMYYYYHHMMSS()}.pdf`;
-  const blobUrl = URL.createObjectURL(pdfBlob);
-  const opened = window.open('', '_blank');
-  if (opened) {
-    const safeName = _escapeHtml(fileName);
-    const jsFileName = JSON.stringify(fileName);
-    const jsBlobUrl = JSON.stringify(blobUrl);
-    opened.document.open();
-    opened.document.write(`<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${safeName}</title>
-  <style>
-    body{margin:0;font-family:Arial,sans-serif;background:#f2f3f7;}
-    .bar{height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:#ffffff;border-bottom:1px solid #d9dbe3;box-sizing:border-box;}
-    .name{font-size:13px;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70vw;}
-    .btn{display:inline-flex;align-items:center;justify-content:center;height:30px;padding:0 12px;border:1px solid #2563eb;border-radius:6px;background:#2563eb;color:#fff;font-size:12px;text-decoration:none;cursor:pointer;}
-    iframe{width:100%;height:calc(100vh - 44px);border:0;display:block;background:#fff;}
-  </style>
-</head>
-<body>
-  <div class="bar">
-    <div class="name">${safeName}</div>
-    <button class="btn" id="downloadBtn" type="button">Download PDF</button>
-  </div>
-  <iframe src="${blobUrl}" title="${safeName}"></iframe>
-  <script>
-    (function () {
-      var fileName = ${jsFileName};
-      var blobUrl = ${jsBlobUrl};
-      var btn = document.getElementById('downloadBtn');
-      if (!btn) return;
-      btn.addEventListener('click', async function () {
-        try {
-          var resp = await fetch(blobUrl);
-          if (!resp.ok) throw new Error('Download source not available');
-          var blob = await resp.blob();
-          var localUrl = URL.createObjectURL(blob);
-          var a = document.createElement('a');
-          a.href = localUrl;
-          a.download = fileName;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(function () { URL.revokeObjectURL(localUrl); }, 5000);
-        } catch (e) {
-          alert('Could not download PDF. Please use browser save/download icon.');
-        }
-      });
-    })();
-  </script>
-</body>
-</html>`);
-    opened.document.close();
-  } else {
-    const link = document.createElement('a');
-    link.href = blobUrl;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-  }
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-  return pdfBlob;
-}
-
 function _stringifyValue(value) {
   if (value === null || value === undefined) return '';
   return String(value);
@@ -1387,7 +1188,7 @@ function _drawV2TextElement(doc, el, text) {
   const wrap = doc.splitTextToSize(textValue, Math.max(0.1, w - pad * 2));
   const fs = Math.max(5, Number(s.fontSize || 10) || 10);
   const lineHeight = fs * 0.36;
-  // Keep text anchored near the top of its box (closer to legacy DOM renderer behavior)
+  // Keep text anchored near the top of its box for consistent layout parity.
   // so small top-right metadata does not collide with nearby lines.
   const startY = y + pad;
   const { align, xFactor } = _alignForText(s);
@@ -1679,40 +1480,6 @@ async function _drawV2BarcodeElement(doc, el, fieldValues, profileCfg) {
   }
 }
 
-function _getTableRowHeightsMm(tbl, totalHeight, rows) {
-  const base = Array.isArray(tbl.rowHeights) && tbl.rowHeights.length ? tbl.rowHeights.slice() : Array(rows).fill(1);
-  while (base.length < rows) base.push(base[base.length - 1] || 1);
-  const sum = base.reduce((a, b) => a + (Number(b) || 0), 0) || rows;
-  return base.map(v => (Number(v) || 0) / sum * totalHeight);
-}
-
-function _getTableColWidthsMm(tbl, totalWidth, cols) {
-  const base = Array.isArray(tbl.colWidths) && tbl.colWidths.length ? tbl.colWidths.slice() : Array(cols).fill(1);
-  while (base.length < cols) base.push(base[base.length - 1] || 1);
-  const sum = base.reduce((a, b) => a + (Number(b) || 0), 0) || cols;
-  return base.map(v => (Number(v) || 0) / sum * totalWidth);
-}
-
-function _collectTableCellMap(tbl) {
-  const map = new Map();
-  (tbl.cells || []).forEach(cell => {
-    map.set(`${cell.row}:${cell.col}`, cell);
-  });
-  return map;
-}
-
-function _computeFooterFormulaValue(rows, field, formulaType, mergeText) {
-  const op = String(formulaType || 'none').toLowerCase();
-  if (op === 'sum') {
-    const total = (rows || []).reduce((acc, row) => acc + (Number(row?.[field]) || 0), 0);
-    return Number.isFinite(total) ? String(total) : '';
-  }
-  if (op === 'merge') {
-    return `${mergeText || ''}`.trim();
-  }
-  return '';
-}
-
 async function _drawV2TableElement(doc, el, fieldValues, detailRows, allDetailRows, profileCfg) {
   const x = Number(el.x) || 0;
   const y = Number(el.y) || 0;
@@ -1895,6 +1662,8 @@ async function generatePDFV2(layout, fieldValues, detailRows, options = {}) {
   const orientation = page.orientation === 'landscape' ? 'l' : 'p';
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation, unit: 'mm', format: [wMm, hMm], compress: profileCfg.compress !== false });
+  // Render each canonical page to image once, then place into jsPDF page.
+  // This keeps PDF output aligned with Live preview layout behavior.
   const pageRaster = _getV2TableRasterOptions(profileCfg);
   const wPx = Math.max(1, Math.round(wMm * PDF_MM_TO_PX));
   const hPx = Math.max(1, Math.round(hMm * PDF_MM_TO_PX));
@@ -2067,36 +1836,12 @@ function _applyTextDecorations(doc, text, x, y, maxWidthMm, style) {
   doc.setLineDashPattern([], 0);
 }
 
-function _resolvePdfEngine(layout) {
-  return 'v2';
-}
-
 /**
  * Public PDF generation API.
- * Routes by page.pdfEngine; defaults to legacy for backward compatibility.
+ * V2-only renderer.
  */
 async function generatePDF(layout, fieldValues, detailRows) {
-  const engine = _resolvePdfEngine(layout);
   const startedAt = performance.now();
-  if (engine !== 'v2') {
-    const blob = await generatePDFLegacy(layout, fieldValues, detailRows);
-    const durationMs = Math.round(performance.now() - startedAt);
-    const pagesGuess = Math.max(1, parseInt(_getLastPdfTelemetry()?.pages, 10) || 1);
-    _recordPdfTelemetry({
-      type: 'pdf_generate',
-      engine: 'legacy',
-      profile: 'legacy',
-      layoutId: layout?.id || '',
-      layoutName: layout?.name || '',
-      pages: pagesGuess,
-      detailRows: Array.isArray(detailRows) ? detailRows.length : 0,
-      bytes: blob?.size || 0,
-      bytesPerPage: Math.round((blob?.size || 0) / pagesGuess),
-      durationMs,
-      success: true,
-    });
-    return blob;
-  }
   const requestedProfile = _resolvePdfProfile(layout);
   try {
     const out = await generatePDFV2(layout, fieldValues, detailRows, { profile: requestedProfile });
@@ -2246,3 +1991,5 @@ window.getPdfEmailGuardConfig = function getPdfEmailGuardConfig() {
   const cfg = _getPdfConfig();
   return { ...(cfg.email || {}) };
 };
+
+

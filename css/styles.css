@@ -152,6 +152,7 @@ input, select, textarea, button {
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 7px 14px;
   border: none;
@@ -162,6 +163,7 @@ input, select, textarea, button {
   white-space: nowrap;
   text-decoration: none;
   line-height: 1.2;
+  min-height: 32px;
 }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
@@ -206,6 +208,9 @@ input, select, textarea, button {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 6px;
 }
 
 .setup-tabs,
@@ -546,7 +551,7 @@ textarea { resize: vertical; }
 .toolbar-left, .toolbar-right {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 .toolbar-center {
   flex: 1;
@@ -561,6 +566,7 @@ textarea { resize: vertical; }
   padding: 5px 10px;
   font-size: 12px;
   min-width: 36px;
+  min-height: 30px;
 }
 .toolbar-divider {
   width: 1px;
@@ -1541,7 +1547,10 @@ textarea { resize: vertical; }
 }
 .livepreview-footer {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 12px 14px;
   border-top: 1px solid var(--border);
@@ -1557,8 +1566,9 @@ textarea { resize: vertical; }
 .livepreview-footer-btns {
   display: flex;
   gap: 8px;
+  margin-left: auto;
 }
-.livepreview-footer-btns .btn { flex: 1; }
+.livepreview-footer-btns .btn { min-width: 120px; }
 .livepreview-right {
   flex: 1;
   overflow: auto;
