@@ -95,6 +95,7 @@ function showLoginView(message) {
 
 async function loadCurrentUserLayouts(options = {}) {
   const fastLogin = options.fastLogin !== false;
+  const isLivePreviewTab = Boolean(new URLSearchParams(window.location.search).get('livepreview'));
   const user = getCurrentUser();
   if (!user) {
     showLoginView();
@@ -107,14 +108,16 @@ async function loadCurrentUserLayouts(options = {}) {
     if (fastLogin && initResult?.syncPromise) {
       initResult.syncPromise.finally(() => {
         updateStorageStatus();
-        if (currentView === 'home') renderHomeView();
+        // Never force Home render inside a live-preview tab.
+        if (!isLivePreviewTab && currentView === 'home') renderHomeView();
       });
     }
 
     const smartRulesPromise = window.LayoutStore.loadSmartRules?.();
     if (fastLogin) {
       Promise.resolve(smartRulesPromise).finally(() => {
-        if (currentView === 'home') renderHomeView();
+        // Never force Home render inside a live-preview tab.
+        if (!isLivePreviewTab && currentView === 'home') renderHomeView();
       });
     } else {
       await smartRulesPromise;
