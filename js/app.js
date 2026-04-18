@@ -1115,7 +1115,6 @@ async function shareLayoutToUser(layoutId, enteredUserId) {
     copy.userId = targetUser.id;
     copy.username = targetUser.username;
     delete copy.sharedWithUsernames;
-    delete copy.emailSettings;
 
     const result = await window.LayoutStore?.saveForUser?.(copy, targetUser);
     if (!result?.ok) throw (result?.error || new Error('Could not share layout.'));
@@ -1156,7 +1155,7 @@ function openShareLayoutModal(layoutId) {
   const user = getCurrentUser();
   const canShare = user?.role === 'designer' || user?.role === 'super';
   document.getElementById('tab-share-layout-share')?.classList.toggle('hidden', !canShare);
-  document.getElementById('tab-share-layout-email')?.classList.toggle('hidden', !(user?.role === 'designer' || user?.role === 'super'));
+  document.getElementById('tab-share-layout-email')?.classList.toggle('hidden', !user);
   setShareLayoutTab(canShare ? 'share' : 'download');
   document.getElementById('modal-share-layout')?.classList.remove('hidden');
   scheduleContextAutofocus();
