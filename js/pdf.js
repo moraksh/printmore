@@ -301,12 +301,6 @@ function _buildSvgNodeFromMarkup(markup) {
   return holder.firstElementChild;
 }
 
-function _elementOverlapsVerticalBand(el, bandTopMm, bandBottomMm) {
-  const top = el.y;
-  const bottom = el.y + el.height;
-  return top < bandBottomMm && bottom > bandTopMm;
-}
-
 function _resolveLayoutPageSizeMm(layout) {
   const page = layout?.page || {};
   const sizes = window.PAGE_SIZES || {};
@@ -378,9 +372,6 @@ function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale =
         pageEls.push(el);
       } else if (isFirst) {
         // Keep non-detail body items on first page unless explicitly header/footer.
-        pageEls.push(el);
-      } else if (_elementOverlapsVerticalBand(el, detailBandTop, detailBandBottom)) {
-        // Edge-case support for positioned items anchored inside the detail band.
         pageEls.push(el);
       }
     });
