@@ -1534,7 +1534,59 @@ async function _drawV2TableElement(doc, el, fieldValues, detailRows, allDetailRo
   const y = Number(el.y) || 0;
   const w = Math.max(0.1, Number(el.width) || 0);
   const h = Math.max(0.1, Number(el.height) || 0);
+  const isDetail = el?.table?.detailMode === true;
   try {
+    // Detail tables can grow beyond designed table box for repeating rows.
+    // Rasterize with dynamic content height so rows are not clipped in PDF pages.
+    if (isDetail && Array.isArray(detailRows) && detailRows.length) {
+      const scale = 2;
+      const wPx = Math.max(1, Math.round(w * PDF_MM_TO_PX));
+      const fallbackHPx = Math.max(1, Math.round(h * PDF_MM_TO_PX));
+      const host = document.createElement('div');
+      host.style.cssText = `position:fixed;left:-9999px;top:0;width:${wPx}px;` +
+        `overflow:visible;pointer-events:none;visibility:visible;box-sizing:border-box;background:#ffffff;`;
+      if (Number.isFinite(el?.style?.opacity)) host.style.opacity = String(el.style.opacity);
+      document.body.appendChild(host);
+      try {
+        host.style.position = 'relative';
+        const inner = document.createElement('div');
+        inner.style.cssText = `position:relative;width:${wPx}px;height:auto;overflow:visible;box-sizing:border-box;`;
+        host.appendChild(inner);
+        buildTableDOM(inner, el, fieldValues || {}, PDF_MM_TO_PX, detailRows || null, allDetailRows || detailRows || null);
+        await Promise.all(
+          Array.from(host.querySelectorAll('img')).map(img =>
+            img.complete ? Promise.resolve() : new Promise(r => { img.onload = r; img.onerror = r; })
+          )
+        );
+
+        const tableEl = host.querySelector('table');
+        const contentHPx = Math.max(
+          fallbackHPx,
+          Math.ceil(tableEl?.getBoundingClientRect()?.height || 0),
+          Math.ceil(inner.getBoundingClientRect()?.height || 0),
+          Math.ceil(inner.scrollHeight || 0)
+        );
+
+        host.style.height = contentHPx + 'px';
+        inner.style.height = contentHPx + 'px';
+
+        const canvas = await html2canvas(host, {
+          scale,
+          useCORS: true,
+          allowTaint: true,
+          backgroundColor: '#ffffff',
+          logging: false,
+          width: wPx,
+          height: contentHPx,
+        });
+        const drawHmm = Math.max(0.1, contentHPx / PDF_MM_TO_PX);
+        doc.addImage(canvas.toDataURL('image/png'), 'PNG', x, y, w, drawHmm, undefined, 'FAST');
+      } finally {
+        document.body.removeChild(host);
+      }
+      return;
+    }
+
     const raster = await _rasterizeDomElementForV2(
       w,
       h,
