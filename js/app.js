@@ -1088,7 +1088,7 @@ async function maybeSendPdfAfterRun(layout, pdfBlob, fieldValues) {
   }
 }
 
-async function shareLayoutToUser(layoutId, enteredUserId) {
+async function shareLayoutToUser(layoutId, enteredUserId, targetLayoutName) {
   const current = getCurrentUser();
   if (!(current?.role === 'designer' || current?.role === 'super')) {
     return { ok: false, message: 'Only designer or super user can share layouts.' };
@@ -1114,6 +1114,9 @@ async function shareLayoutToUser(layoutId, enteredUserId) {
     copy.updatedAt = new Date().toISOString();
     copy.userId = targetUser.id;
     copy.username = targetUser.username;
+    if (String(targetLayoutName || '').trim()) {
+      copy.name = String(targetLayoutName || '').trim();
+    }
     delete copy.sharedWithUsernames;
 
     const result = await window.LayoutStore?.saveForUser?.(copy, targetUser);
@@ -1146,6 +1149,8 @@ function openShareLayoutModal(layoutId) {
   const layout = getLayoutById(layoutId);
   const emailCfg = getLayoutEmailSettings(layout);
   document.getElementById('share-layout-user-id').value = '';
+  document.getElementById('share-layout-rename').value = '';
+  document.getElementById('share-layout-rename-wrap')?.classList.add('hidden');
   document.getElementById('share-layout-error')?.classList.add('hidden');
   document.getElementById('share-email-error')?.classList.add('hidden');
   document.getElementById('share-email-auto-send').checked = emailCfg.autoSendOnRun;
@@ -1247,15 +1252,28 @@ function initShareLayoutEvents() {
   document.getElementById('btn-share-layout-send')?.addEventListener('click', async () => {
     if (!shareLayoutModalId) return;
     const userId = document.getElementById('share-layout-user-id')?.value || '';
+    const rename = document.getElementById('share-layout-rename')?.value || '';
     const btn = document.getElementById('btn-share-layout-send');
     const error = document.getElementById('share-layout-error');
+    const renameWrap = document.getElementById('share-layout-rename-wrap');
     btn.disabled = true;
     btn.textContent = 'Sharing...';
-    const result = await shareLayoutToUser(shareLayoutModalId, userId);
+    const result = await shareLayoutToUser(shareLayoutModalId, userId, rename);
     btn.disabled = false;
     btn.textContent = 'Share Layout';
     if (!result.ok) {
-      error.textContent = result.message || 'Could not share layout.';
+      const msg = result.message || 'Could not share layout.';
+      const isDuplicateName = /already exists/i.test(msg);
+      if (isDuplicateName) {
+        renameWrap?.classList.remove('hidden');
+        if (!String(rename || '').trim()) {
+          const src = getLayoutById(shareLayoutModalId);
+          const defaultName = src?.name ? `${src.name} (copy)` : 'Layout (copy)';
+          const renameInput = document.getElementById('share-layout-rename');
+          if (renameInput && !renameInput.value) renameInput.value = defaultName;
+        }
+      }
+      error.textContent = msg;
       error.classList.remove('hidden');
       return;
     }
