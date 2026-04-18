@@ -408,6 +408,7 @@ function escapeHtml(str) {
 let setupStep = 1;
 
 function showSetupView(prefill) {
+  const defaultPdfProfile = window.PRINTMORE_PDF_CONFIG?.defaults?.profile || 'standard';
   setupStep = 1;
   showView('setup');
   showSetupStep(1);
@@ -416,6 +417,7 @@ function showSetupView(prefill) {
   document.getElementById('layout-name').value = prefill?.name || '';
   document.getElementById('page-size').value = prefill?.page?.size || 'A4';
   document.getElementById('page-orientation').value = prefill?.page?.orientation || 'portrait';
+  document.getElementById('page-pdf-profile').value = prefill?.page?.pdfProfile || defaultPdfProfile;
   document.getElementById('custom-page-width').value = customWidth;
   document.getElementById('custom-page-height').value = customHeight;
   document.getElementById('margin-top').value = prefill?.page?.marginTop ?? 5;
@@ -454,6 +456,7 @@ function toggleSetupCustomSize() {
 }
 
 function createNewLayout() {
+  const defaultPdfProfile = window.PRINTMORE_PDF_CONFIG?.defaults?.profile || 'standard';
   const name = document.getElementById('layout-name').value.trim();
   const finalName = name || 'Untitled Layout';
   const existing = loadLayouts();
@@ -465,6 +468,8 @@ function createNewLayout() {
   }
   const size = document.getElementById('page-size').value;
   const orientation = document.getElementById('page-orientation').value;
+  const pdfEngine = 'v2';
+  const pdfProfile = document.getElementById('page-pdf-profile')?.value || defaultPdfProfile;
   const customWidthMm = Math.max(20, parseFloat(document.getElementById('custom-page-width')?.value) || 210);
   const customHeightMm = Math.max(20, parseFloat(document.getElementById('custom-page-height')?.value) || 297);
   const marginTop = parseFloat(document.getElementById('margin-top').value) || 5;
@@ -489,7 +494,7 @@ function createNewLayout() {
     name: finalName,
     createdAt: nowIso,
     updatedAt: nowIso,
-    page: { size, orientation, marginTop, marginBottom, marginLeft, marginRight, customWidthMm, customHeightMm },
+    page: { size, orientation, pdfEngine, pdfProfile, marginTop, marginBottom, marginLeft, marginRight, customWidthMm, customHeightMm },
     fields,
     texts: fields.slice(),
     fieldMeta: {},
@@ -1021,11 +1026,30 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
   }
   const apiUrl = localStorage.getItem(EMAIL_API_URL_KEY) || DEFAULT_EMAIL_API_URL;
   const sessionToken = window.AuthStore?.sessionToken?.() || '';
+  const emailCfg = window.getPdfEmailGuardConfig ? window.getPdfEmailGuardConfig() : {};
+  const maxAttachmentBytes = Number(emailCfg.maxAttachmentBytes || (22 * 1024 * 1024));
+  const hardLimitBytes = Number(emailCfg.hardProviderLimitBytes || (24 * 1024 * 1024));
+  const timeoutMs = Number(emailCfg.timeoutMs || 30000);
   if (!apiUrl) {
     return { ok: false, message: 'Email service is not configured.' };
   }
   if (!sessionToken) {
     return { ok: false, message: 'Session expired. Please sign in again.' };
+  }
+  if (!pdfBlob || !Number.isFinite(pdfBlob.size)) {
+    return { ok: false, message: 'PDF payload is missing. Please generate PDF again.' };
+  }
+  if (pdfBlob.size > hardLimitBytes) {
+    return {
+      ok: false,
+      message: 'PDF is too large for email provider limit. Options: split pages, use lower PDF profile, or download only.',
+    };
+  }
+  if (pdfBlob.size > maxAttachmentBytes) {
+    return {
+      ok: false,
+      message: 'PDF exceeds configured email size threshold. Options: split pages, compress profile (Draft/Standard), or download only.',
+    };
   }
 
   const subject = applyEmailTemplate(cfg.subject || `Layout ${layout?.name || ''}`, layout, fieldValues);
@@ -1040,7 +1064,6 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
 
   let res;
   const controller = new AbortController();
-  const timeoutMs = 30000;
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     res = await fetch(apiUrl, {
@@ -1065,10 +1088,27 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
     clearTimeout(timeoutId);
     await uploaded?.cleanup?.();
     if (err?.name === 'AbortError') {
-      return {
+      const result = {
         ok: false,
         message: 'Email send timed out. Please check mail server settings and try again.',
       };
+      window.recordPdfEvent?.({
+        type: 'email_send',
+        ok: false,
+        reason: 'timeout',
+        timeoutMs,
+        layoutId: layout?.id || '',
+        layoutName: layout?.name || '',
+        recipients: cfg.recipients?.length || 0,
+        pdfBytes: pdfBlob?.size || 0,
+      });
+      if (window.getLastPdfTelemetry) {
+        const t = window.getLastPdfTelemetry();
+        try {
+          console.warn('[PrintMore][Email]', { ok: false, reason: 'timeout', timeoutMs, layoutId: layout?.id, pdfBytes: pdfBlob?.size || 0, lastPdf: t });
+        } catch {}
+      }
+      return result;
     }
     return {
       ok: false,
@@ -1081,9 +1121,46 @@ async function sendPdfViaEmail(layout, pdfBlob, fieldValues) {
   try { payload = await res.json(); } catch {}
   if (!res.ok || payload?.ok === false) {
     await uploaded?.cleanup?.();
+    window.recordPdfEvent?.({
+      type: 'email_send',
+      ok: false,
+      reason: payload?.message || `HTTP_${res.status}`,
+      layoutId: layout?.id || '',
+      layoutName: layout?.name || '',
+      recipients: cfg.recipients?.length || 0,
+      pdfBytes: pdfBlob?.size || 0,
+      status: res.status,
+    });
+    try {
+      console.warn('[PrintMore][Email]', {
+        ok: false,
+        reason: payload?.message || `HTTP_${res.status}`,
+        layoutId: layout?.id,
+        recipients: cfg.recipients?.length || 0,
+        pdfBytes: pdfBlob?.size || 0,
+      });
+    } catch {}
     return { ok: false, message: payload?.message || 'Error in email connection. Please contact administrator.' };
   }
   await uploaded?.cleanup?.();
+  window.recordPdfEvent?.({
+    type: 'email_send',
+    ok: true,
+    reason: payload?.message || 'Email sent.',
+    layoutId: layout?.id || '',
+    layoutName: layout?.name || '',
+    recipients: cfg.recipients?.length || 0,
+    pdfBytes: pdfBlob?.size || 0,
+  });
+  try {
+    console.log('[PrintMore][Email]', {
+      ok: true,
+      layoutId: layout?.id,
+      recipients: cfg.recipients?.length || 0,
+      pdfBytes: pdfBlob?.size || 0,
+      message: payload?.message || 'Email sent.',
+    });
+  } catch {}
   return { ok: true, message: payload?.message || 'Email sent.' };
 }
 

@@ -27,6 +27,43 @@ Open `index.html` directly in a browser, or serve the folder with any static fil
 
 Without Supabase settings, layouts are stored in browser `localStorage`.
 
+## PDF V2 (Safe Rollout)
+
+PrintMore now has two PDF engines:
+
+- `Legacy` (current production behavior)
+- `V2 (Preview)` (new vector pipeline)
+
+V2 is behind a layout setting (`Page Setup -> PDF Engine`) and supports PDF profiles:
+
+- `Draft (Small)`
+- `Standard (Balanced)`
+- `Print HD (Sharp)`
+
+V2 rendering rules:
+
+- text/lines/tables: vector drawing via jsPDF primitives
+- images/logos: raster with profile-based JPEG control
+- barcodes: high-contrast PNG rendering
+
+Fallback safety:
+
+- If V2 `Print HD` exceeds size/time gates, it auto-falls back to `Standard` with user notice.
+
+Email size guard:
+
+- If generated PDF exceeds configured thresholds, email send is blocked with clear options.
+
+Central config for all V2 PDF behavior:
+
+- `js/pdf-config.js`
+
+Telemetry helpers in browser console:
+
+- `getLastPdfTelemetry()`
+- `getPdfTelemetry()`
+- `evaluatePdfReleaseGate()`
+
 ## Supabase Setup
 
 1. Create a Supabase project.
@@ -89,4 +126,20 @@ Then add your Git remote and push:
 ```powershell
 git remote add origin https://github.com/YOUR_USER/YOUR_REPO.git
 git push -u origin master
+```
+
+## V2 Quality Gate Script
+
+Golden baseline and sample metrics are provided under `tests/`.
+
+Run release gate:
+
+```powershell
+npm run pdf:v2:gate
+```
+
+Optional explicit paths:
+
+```powershell
+node scripts/pdf-v2-release-gate-check.js tests/pdf-v2-golden-baseline.json tests/pdf-v2-current-metrics.sample.json
 ```

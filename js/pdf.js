@@ -9,6 +9,126 @@ const PDF_HD_CANVAS_SCALE = 2.25;
 const PDF_LARGE_JOB_CANVAS_SCALE = 1.5;
 const PDF_IMAGE_QUALITY = 0.9;
 
+const _pdfTelemetry = [];
+let _lastPdfTelemetry = null;
+
+function _getPdfConfig() {
+  return window.PRINTMORE_PDF_CONFIG || {};
+}
+
+function _resolvePdfProfile(layout) {
+  const cfg = _getPdfConfig();
+  const profiles = cfg.profiles || {};
+  const fallback = cfg.defaults?.profile || 'standard';
+  const raw = String(layout?.page?.pdfProfile || fallback).trim().toLowerCase();
+  return profiles[raw] ? raw : fallback;
+}
+
+function _getPdfProfileConfig(profileId) {
+  const cfg = _getPdfConfig();
+  const profiles = cfg.profiles || {};
+  return profiles[profileId] || profiles[cfg.defaults?.profile || 'standard'] || {
+    id: 'standard',
+    imageJpegQuality: 0.8,
+    imageScale: 1.6,
+    barcodeScale: 3,
+    barcodeModuleWidth: 1.6,
+    compress: true,
+    maxBytesPerPage: 1.5 * 1024 * 1024,
+    maxTotalBytes: 8 * 1024 * 1024,
+    maxGenerationMs: 12000,
+  };
+}
+
+function _recordPdfTelemetry(entry) {
+  const cfg = _getPdfConfig();
+  const maxRecords = Math.max(10, parseInt(cfg?.telemetry?.maxInMemoryRecords, 10) || 100);
+  const normalized = { timestamp: new Date().toISOString(), ...entry };
+  _pdfTelemetry.push(normalized);
+  while (_pdfTelemetry.length > maxRecords) _pdfTelemetry.shift();
+  _lastPdfTelemetry = normalized;
+  if (cfg?.telemetry?.verboseConsole) {
+    try { console.log('[PrintMore][PDF]', normalized); } catch {}
+  }
+}
+
+function _getLastPdfTelemetry() {
+  return _lastPdfTelemetry ? { ..._lastPdfTelemetry } : null;
+}
+
+function _getPdfTelemetry() {
+  return _pdfTelemetry.map(t => ({ ...t }));
+}
+
+function _clearPdfTelemetry() {
+  _pdfTelemetry.length = 0;
+  _lastPdfTelemetry = null;
+}
+
+function recordPdfEvent(entry) {
+  _recordPdfTelemetry({ type: 'custom', ...(entry || {}) });
+}
+
+function evaluatePdfReleaseGate(records) {
+  const cfg = _getPdfConfig();
+  const gate = cfg.releaseGate || {};
+  const list = Array.isArray(records) ? records : _pdfTelemetry;
+  const pdfRuns = list.filter(r => r && r.type === 'pdf_generate' && r.engine === 'v2' && r.success !== false);
+  const issues = [];
+  const byProfile = {};
+  pdfRuns.forEach(run => {
+    const p = run.profile || 'standard';
+    byProfile[p] = byProfile[p] || [];
+    byProfile[p].push(run);
+  });
+
+  Object.entries(byProfile).forEach(([profile, runs]) => {
+    const maxMs = Number(gate?.maxGenerationMs?.[profile] ?? Number.MAX_SAFE_INTEGER);
+    const maxBytesPerPage = Number(gate?.maxBytesPerPage?.[profile] ?? Number.MAX_SAFE_INTEGER);
+    runs.forEach(run => {
+      if ((run.durationMs || 0) > maxMs) {
+        issues.push(`Profile ${profile}: generation ${run.durationMs}ms exceeded ${maxMs}ms`);
+      }
+      if ((run.bytesPerPage || 0) > maxBytesPerPage) {
+        issues.push(`Profile ${profile}: bytes/page ${run.bytesPerPage} exceeded ${Math.round(maxBytesPerPage)}`);
+      }
+    });
+  });
+
+  const overlapFailures = list.filter(r => r?.type === 'overlap_regression' && r?.failed).length;
+  if (overlapFailures > (Number(gate.maxOverlapRegressions) || 0)) {
+    issues.push(`Overlap regressions: ${overlapFailures} > ${gate.maxOverlapRegressions || 0}`);
+  }
+
+  const barcodeChecks = list.filter(r => r?.type === 'barcode_scan_check');
+  if (barcodeChecks.length) {
+    const okRate = barcodeChecks.filter(r => r?.ok).length / barcodeChecks.length;
+    if (okRate < Number(gate.barcodeScanSuccessMin || 0)) {
+      issues.push(`Barcode scan success ${(okRate * 100).toFixed(1)}% is below ${(Number(gate.barcodeScanSuccessMin || 0) * 100).toFixed(1)}%`);
+    }
+  }
+
+  const visualChecks = list.filter(r => r?.type === 'visual_diff_check');
+  if (visualChecks.length) {
+    const maxDiff = Math.max(...visualChecks.map(v => Number(v.diffPct || 0)));
+    if (maxDiff > Number(gate.visualDiffTolerancePct || Number.MAX_SAFE_INTEGER)) {
+      issues.push(`Visual diff ${maxDiff}% exceeded tolerance ${gate.visualDiffTolerancePct}%`);
+    }
+  }
+
+  return {
+    ok: issues.length === 0,
+    issues,
+    summary: {
+      totalRuns: pdfRuns.length,
+      profiles: Object.keys(byProfile),
+      overlapFailures,
+      barcodeChecks: barcodeChecks.length,
+      visualChecks: visualChecks.length,
+    },
+  };
+}
+
 function _sanitizePdfBaseName(name) {
   const cleaned = String(name || 'Layout')
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
@@ -96,17 +216,9 @@ function _detailStartYForPage(detailEl, page, pageIndex) {
   const marginTop = page.marginTop ?? 15;
   const headerHeight = page.headerHeight || 0;
   const hasHeaderOnCurrentPage = _isHeaderActiveOnPage(page, pageIndex);
-
-  // If no header is shown on this page, start detail rows from the top body start.
-  if (!hasHeaderOnCurrentPage) return marginTop;
-
-  // Preserve the designer's vertical offset from the top of the body area.
-  // Body start on page 1 depends on whether header is active there.
-  const firstPageBodyStart = _isHeaderActiveOnPage(page, 0) ? headerHeight : marginTop;
-  const designedOffsetFromBodyStart = detailEl.y - firstPageBodyStart;
-
-  const currentPageBodyStart = headerHeight;
-  return currentPageBodyStart + designedOffsetFromBodyStart;
+  // For continuation pages, start table rows at the current page body start only.
+  // This avoids inheriting first-page body content spacing (customer/invoice/total block).
+  return hasHeaderOnCurrentPage ? headerHeight : marginTop;
 }
 
 function _elementOverlapsVerticalBand(el, bandTopMm, bandBottomMm) {
@@ -198,6 +310,23 @@ function _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm) {
   }
 
   return slices.length ? slices : [[]];
+}
+
+function checkDeterministicPageBreaks(detailEl, fieldValues, scale, detailRows, page, hMm) {
+  if (!detailEl || !Array.isArray(detailRows)) {
+    return { ok: true, fingerprintA: '', fingerprintB: '' };
+  }
+  const a = _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm).map(rows => rows.length).join('|');
+  const b = _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm).map(rows => rows.length).join('|');
+  const ok = a === b;
+  _recordPdfTelemetry({
+    type: 'page_break_determinism',
+    ok,
+    fingerprintA: a,
+    fingerprintB: b,
+    rows: detailRows.length,
+  });
+  return { ok, fingerprintA: a, fingerprintB: b };
 }
 
 /**
@@ -431,50 +560,33 @@ function buildBarcodeDOM(wrapper, el, fieldValues) {
   wrapper.style.background = '#fff';
   wrapper.style.overflow = 'hidden';
 
-  // Render barcode onto a canvas sized to exactly the wrapper dimensions (in px).
-  // Avoid display:flex and object-fit:contain — html2canvas does not support either
-  // and will misplace or distort the barcode in the PDF output.
-  const wPx = el.width  * PDF_MM_TO_PX;
-  const hPx = el.height * PDF_MM_TO_PX;
-  const HIRES = 4;
-  const fontSize   = (bc.fontSize || 10) * HIRES;
-  const textAllow  = bc.showText !== false ? fontSize * 1.4 + HIRES * 2 : 0;
-  const barHeight  = Math.max(10, Math.round(hPx * HIRES - textAllow - HIRES * 4));
-
-  const canvas = document.createElement('canvas');
+  // Keep runtime rendering model aligned with designer (SVG + contain fit).
+  const hPx = Math.max(8, el.height * PDF_MM_TO_PX);
   try {
-    JsBarcode(canvas, value, {
-      format:       bc.type || 'CODE128',
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const textAllowance = bc.showText !== false ? (bc.fontSize || 10) + 4 : 0;
+    const barHeight = Math.max(8, Math.round(hPx - textAllowance - 6));
+    JsBarcode(svg, value, {
+      format: bc.type || 'CODE128',
       displayValue: bc.showText !== false,
-      fontSize,
-      lineColor:    bc.textColor || '#000000',
-      height:       barHeight,
-      width:        HIRES * 2,
-      margin:       HIRES * 2,
-      textMargin:   HIRES * 2,
-      background:   '#ffffff',
+      fontSize: bc.fontSize || 10,
+      lineColor: bc.textColor || '#000000',
+      height: barHeight,
+      width: 1.5,
+      margin: 2,
+      textMargin: 2,
+      background: '#ffffff',
     });
-    // Resize canvas to exact wrapper px dimensions so img fills at 1:1 with no scaling needed
-    const scaled = document.createElement('canvas');
-    scaled.width  = Math.round(wPx);
-    scaled.height = Math.round(hPx);
-    const ctx = scaled.getContext('2d');
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, scaled.width, scaled.height);
-    // Draw the barcode centred in the scaled canvas
-    const srcW = canvas.width, srcH = canvas.height;
-    const dstW = scaled.width, dstH = scaled.height;
-    const scaleF = Math.min(dstW / srcW, dstH / srcH);
-    const drawW  = srcW * scaleF;
-    const drawH  = srcH * scaleF;
-    const drawX  = (dstW - drawW) / 2;
-    const drawY  = (dstH - drawH) / 2;
-    ctx.drawImage(canvas, drawX, drawY, drawW, drawH);
-    const img = document.createElement('img');
-    img.src = scaled.toDataURL('image/png');
-    // Exact pixel size — no CSS scaling, no object-fit — html2canvas renders it perfectly
-    img.style.cssText = `position:absolute;left:0;top:0;width:${dstW}px;height:${dstH}px;display:block;`;
-    wrapper.appendChild(img);
+    const svgW = parseFloat(svg.getAttribute('width')) || 200;
+    const svgH = parseFloat(svg.getAttribute('height')) || 60;
+    if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '100%');
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    svg.style.cssText = 'display:block;width:100%;height:100%;overflow:hidden;';
+    wrapper.style.position = 'relative';
+    wrapper.style.overflow = 'hidden';
+    wrapper.appendChild(svg);
   } catch (e) {
     wrapper.style.border = '1px dashed #ccc';
     const lbl = document.createElement('div');
@@ -682,24 +794,30 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
         }
         if (cellValue && typeof JsBarcode !== 'undefined') {
           td.style.padding = '2px';
+          td.style.height = rowHpx + 'px';
+          td.style.maxHeight = rowHpx + 'px';
           td.style.textAlign = 'center';
-          const HIRES = 3;
-          const fontSize = 8 * HIRES;
-          const textAllow = cp.barcodeShowText !== false ? fontSize * 1.4 + HIRES * 2 : 0;
-          const barHeight = Math.max(8, Math.round(rowHpx * HIRES - textAllow - HIRES * 4));
-          const canvas = document.createElement('canvas');
           try {
-            JsBarcode(canvas, cellValue, {
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            JsBarcode(svg, cellValue, {
               format: cp.barcodeType || 'CODE128',
               displayValue: cp.barcodeShowText !== false,
-              fontSize, height: barHeight, width: HIRES, margin: HIRES,
-              textMargin: HIRES, background: '#ffffff',
+              height: 18,
+              width: 1,
+              margin: 1,
+              fontSize: 7,
+              textMargin: 1,
+              background: '#ffffff',
               lineColor: '#000000',
             });
-            const img = document.createElement('img');
-            img.src = canvas.toDataURL('image/png');
-            img.style.cssText = 'max-width:100%;height:100%;object-fit:contain;display:block;margin:auto;';
-            td.appendChild(img);
+            const svgW = parseFloat(svg.getAttribute('width')) || 100;
+            const svgH = parseFloat(svg.getAttribute('height')) || 28;
+            if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+            svg.setAttribute('width', '100%');
+            svg.setAttribute('height', '100%');
+            svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+            svg.style.cssText = 'display:block;width:100%;height:100%;';
+            td.appendChild(svg);
           } catch(e) {
             td.textContent = cellValue;
           }
@@ -743,7 +861,7 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
  * @param {Object} fieldValues
  * @param {Array}  [detailRows]
  */
-async function generatePDF(layout, fieldValues, detailRows) {
+async function generatePDFLegacy(layout, fieldValues, detailRows) {
   const page = layout.page;
   const sizes = window.PAGE_SIZES;
   let wMm;
@@ -953,6 +1071,873 @@ async function generatePDF(layout, fieldValues, detailRows) {
   return pdfBlob;
 }
 
+function _stringifyValue(value) {
+  if (value === null || value === undefined) return '';
+  return String(value);
+}
+
+function _resolveElementText(el, fieldValues, pageNum, totalPages) {
+  if (!el) return '';
+  if (el.type === 'text') return applyFieldValues(el.content || '', fieldValues);
+  if (el.type === 'field') return _stringifyValue(el.fieldName ? fieldValues?.[el.fieldName] : '');
+  if (el.type === 'user') return window.AuthStore?.currentUser?.()?.username || '';
+  if (el.type === 'datetime') return _formatDateTimeStr(el.datetimeFormat || 'DD/MM/YYYY');
+  if (el.type === 'pagenum') {
+    const fmt = el.pagenumFormat || 'Page {n}';
+    return fmt.replace('{n}', pageNum).replace('{total}', totalPages);
+  }
+  return '';
+}
+
+function _alignForText(style = {}) {
+  const ta = String(style.textAlign || 'left').toLowerCase();
+  if (ta === 'center') return { align: 'center', xFactor: 0.5 };
+  if (ta === 'right') return { align: 'right', xFactor: 1 };
+  return { align: 'left', xFactor: 0 };
+}
+
+function _normalizeFontFamilyName(rawFamily) {
+  const raw = String(rawFamily || 'Arial').trim();
+  const first = raw.split(',')[0].trim().replace(/^["']|["']$/g, '');
+  return first.toLowerCase();
+}
+
+function _isPdfCoreFontFamily(fontFamily) {
+  const ff = _normalizeFontFamilyName(fontFamily);
+  return ff === 'helvetica' ||
+    ff === 'arial' ||
+    ff === 'times' ||
+    ff === 'times new roman' ||
+    ff === 'courier' ||
+    ff === 'courier new';
+}
+
+function _wrapCanvasLines(ctx, text, maxWidthPx) {
+  const words = String(text || '').split(/\s+/);
+  if (!words.length) return [''];
+  const lines = [];
+  let line = words[0] || '';
+  for (let i = 1; i < words.length; i++) {
+    const test = `${line} ${words[i]}`;
+    if (ctx.measureText(test).width <= maxWidthPx) {
+      line = test;
+    } else {
+      lines.push(line);
+      line = words[i];
+    }
+  }
+  lines.push(line);
+  return lines;
+}
+
+function _drawRasterizedTextOnly(doc, text, x, y, w, h, style = {}, options = {}) {
+  const scale = 2;
+  const wPx = Math.max(8, Math.round(w * PDF_MM_TO_PX * scale));
+  const hPx = Math.max(8, Math.round(h * PDF_MM_TO_PX * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = wPx;
+  canvas.height = hPx;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return false;
+
+  ctx.clearRect(0, 0, wPx, hPx);
+  const fontPt = Math.max(5, Number(style.fontSize || 10) || 10);
+  const fontPx = fontPt * (96 / 72) * scale;
+  const weight = String(style.fontWeight || 'normal').toLowerCase() === 'bold' ? '700' : '400';
+  const italic = String(style.fontStyle || 'normal').toLowerCase() === 'italic' ? 'italic ' : '';
+  const family = String(style.fontFamily || 'Arial');
+  ctx.font = `${italic}${weight} ${fontPx}px ${family}`;
+  const [r, g, b] = _hexToRgb(style.color || '#000000');
+  ctx.fillStyle = `rgb(${r},${g},${b})`;
+  ctx.textBaseline = 'top';
+
+  const align = _alignForText(style);
+  const pad = Math.max(1, Math.round(1.2 * scale));
+  const maxTextWidth = Math.max(1, wPx - pad * 2);
+  const lines = _wrapCanvasLines(ctx, _stringifyValue(text), maxTextWidth);
+  const lineHeight = Math.round(fontPx * 1.25);
+  let startY = pad;
+  if (options.verticalAlign === 'middle') {
+    startY = Math.max(pad, Math.round((hPx - lines.length * lineHeight) / 2));
+  }
+
+  lines.forEach((line, i) => {
+    const yPx = startY + i * lineHeight;
+    if (yPx + lineHeight > hPx) return;
+    let xPx = pad;
+    if (align.align === 'center') xPx = wPx / 2;
+    if (align.align === 'right') xPx = wPx - pad;
+    ctx.textAlign = align.align;
+    ctx.fillText(line, xPx, yPx);
+    const deco = String(style.textDecoration || 'none').toLowerCase();
+    if (deco.includes('underline')) {
+      ctx.strokeStyle = ctx.fillStyle;
+      ctx.lineWidth = Math.max(1, Math.round(scale * 0.7));
+      ctx.beginPath();
+      const lw = ctx.measureText(line).width;
+      const lx = align.align === 'left' ? xPx : (align.align === 'center' ? xPx - lw / 2 : xPx - lw);
+      ctx.moveTo(lx, yPx + fontPx + 1);
+      ctx.lineTo(lx + lw, yPx + fontPx + 1);
+      ctx.stroke();
+    }
+  });
+
+  doc.addImage(canvas.toDataURL('image/png'), 'PNG', x, y, w, h, undefined, 'FAST');
+  return true;
+}
+
+function _drawV2TextElement(doc, el, text) {
+  const s = el.style || {};
+  const x = Number(el.x) || 0;
+  const y = Number(el.y) || 0;
+  const w = Math.max(0.1, Number(el.width) || 0);
+  const h = Math.max(0.1, Number(el.height) || 0);
+
+  if (s.backgroundColor && s.backgroundColor !== 'transparent') {
+    _withRgb(doc, s.backgroundColor, (r, g, b) => {
+      doc.setFillColor(r, g, b);
+      doc.rect(x, y, w, h, 'F');
+    }, [255, 255, 255]);
+  }
+  if ((s.borderWidth || 0) > 0) {
+    _withRgb(doc, s.borderColor || '#000000', (r, g, b) => {
+      doc.setDrawColor(r, g, b);
+      doc.setLineWidth(_strokeWidthMmFromStylePx(s.borderWidth, 0.1, 0.7));
+      _applyPdfBorderStyle(doc, s.borderStyle || 'solid');
+      doc.rect(x, y, w, h);
+      doc.setLineDashPattern([], 0);
+    });
+  }
+
+  // For non-core fonts (e.g., Impact), rasterize text from browser font stack to preserve fidelity.
+  if (!_isPdfCoreFontFamily(s.fontFamily)) {
+    _drawRasterizedTextOnly(doc, _stringifyValue(text), x, y, w, h, s, { verticalAlign: 'top' });
+    return;
+  }
+
+  _setPdfFont(doc, s, 10);
+  const pad = 0.3;
+  const textValue = _stringifyValue(text);
+  const wrap = doc.splitTextToSize(textValue, Math.max(0.1, w - pad * 2));
+  const fs = Math.max(5, Number(s.fontSize || 10) || 10);
+  const lineHeight = fs * 0.36;
+  // Keep text anchored near the top of its box (closer to legacy DOM renderer behavior)
+  // so small top-right metadata does not collide with nearby lines.
+  const startY = y + pad;
+  const { align, xFactor } = _alignForText(s);
+  const tx = x + pad + (w - pad * 2) * xFactor;
+  wrap.forEach((line, i) => {
+    const ly = startY + i * lineHeight;
+    if (ly > y + h - 0.2) return;
+    doc.text(line, tx, ly, { align, baseline: 'top', maxWidth: Math.max(0.1, w - pad * 2) });
+    _applyTextDecorations(doc, line, x + pad, ly + fs * 0.05, Math.max(0.1, w - pad * 2), s);
+  });
+}
+
+function _drawV2RectElement(doc, el) {
+  const s = el.style || {};
+  const x = Number(el.x) || 0;
+  const y = Number(el.y) || 0;
+  const w = Math.max(0.1, Number(el.width) || 0);
+  const h = Math.max(0.1, Number(el.height) || 0);
+  if (s.backgroundColor && s.backgroundColor !== 'transparent') {
+    _withRgb(doc, s.backgroundColor, (r, g, b) => {
+      doc.setFillColor(r, g, b);
+      doc.rect(x, y, w, h, 'F');
+    }, [255, 255, 255]);
+  }
+  if ((s.borderWidth || 0) > 0) {
+    _withRgb(doc, s.borderColor || '#000000', (r, g, b) => {
+      doc.setDrawColor(r, g, b);
+      doc.setLineWidth(_strokeWidthMmFromStylePx(s.borderWidth, 0.1, 0.7));
+      _applyPdfBorderStyle(doc, s.borderStyle || 'solid');
+      doc.rect(x, y, w, h);
+      doc.setLineDashPattern([], 0);
+    });
+  }
+}
+
+function _drawV2LineElement(doc, el) {
+  const s = el.style || {};
+  const x = Number(el.x) || 0;
+  const y = Number(el.y) || 0;
+  const w = Math.max(0.1, Number(el.width) || 0);
+  const h = Math.max(0.1, Number(el.height) || 0);
+  const direction = el.lineDirection || 'horizontal';
+  _withRgb(doc, s.borderColor || '#000000', (r, g, b) => {
+    doc.setDrawColor(r, g, b);
+    doc.setLineWidth(_strokeWidthMmFromStylePx(s.borderWidth, 0.1, 0.7));
+    _applyPdfBorderStyle(doc, s.borderStyle || 'solid');
+  });
+  if (direction === 'vertical') doc.line(x, y, x, y + h);
+  else doc.line(x, y, x + w, y);
+  doc.setLineDashPattern([], 0);
+}
+
+async function _rasterizeImageDataForV2(imageData, profileCfg) {
+  if (!imageData) return null;
+  if (typeof imageData !== 'string') return null;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.max(1, Number(profileCfg?.imageScale || 1.6));
+      const cw = Math.max(1, Math.round(img.width * scale));
+      const ch = Math.max(1, Math.round(img.height * scale));
+      const c = document.createElement('canvas');
+      c.width = cw;
+      c.height = ch;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      resolve({
+        dataUrl: c.toDataURL('image/jpeg', Math.max(0.55, Math.min(0.95, Number(profileCfg?.imageJpegQuality || 0.8)))),
+        format: 'JPEG',
+        srcWidth: c.width,
+        srcHeight: c.height,
+      });
+    };
+    img.onerror = () => resolve({
+      dataUrl: imageData,
+      format: imageData.startsWith('data:image/png') ? 'PNG' : 'JPEG',
+      srcWidth: null,
+      srcHeight: null,
+    });
+    img.src = imageData;
+  });
+}
+
+async function _rasterizeDomElementForV2(widthMm, heightMm, buildFn, options = {}) {
+  const scale = Number(options.scale || 2);
+  const opacity = options.opacity;
+  const wPx = Math.max(1, Math.round(widthMm * PDF_MM_TO_PX));
+  const hPx = Math.max(1, Math.round(heightMm * PDF_MM_TO_PX));
+
+  const host = document.createElement('div');
+  host.style.cssText = `position:fixed;left:-9999px;top:0;width:${wPx}px;height:${hPx}px;` +
+    `overflow:hidden;pointer-events:none;visibility:visible;box-sizing:border-box;background:#ffffff;`;
+  if (Number.isFinite(opacity)) host.style.opacity = String(opacity);
+  document.body.appendChild(host);
+
+  try {
+    await buildFn(host, PDF_MM_TO_PX);
+    await Promise.all(
+      Array.from(host.querySelectorAll('img')).map(img =>
+        img.complete ? Promise.resolve() : new Promise(r => { img.onload = r; img.onerror = r; })
+      )
+    );
+    const canvas = await html2canvas(host, {
+      scale,
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: '#ffffff',
+      logging: false,
+      width: wPx,
+      height: hPx,
+    });
+    return {
+      dataUrl: canvas.toDataURL('image/png'),
+      widthPx: canvas.width || wPx,
+      heightPx: canvas.height || hPx,
+    };
+  } finally {
+    document.body.removeChild(host);
+  }
+}
+
+async function _drawV2ImageElement(doc, el, profileCfg) {
+  const img = await _rasterizeImageDataForV2(el.imageData, profileCfg);
+  if (!img?.dataUrl) return;
+  const s = el.style || {};
+  const x = Number(el.x) || 0;
+  const y = Number(el.y) || 0;
+  const w = Math.max(0.1, Number(el.width) || 0);
+  const h = Math.max(0.1, Number(el.height) || 0);
+
+  if (s.backgroundColor && s.backgroundColor !== 'transparent') {
+    _withRgb(doc, s.backgroundColor, (r, g, b) => {
+      doc.setFillColor(r, g, b);
+      doc.rect(x, y, w, h, 'F');
+    }, [255, 255, 255]);
+  }
+
+  // Match designer's object-fit: contain behavior.
+  let drawW = w;
+  let drawH = h;
+  if (img.srcWidth && img.srcHeight) {
+    const srcRatio = img.srcWidth / img.srcHeight;
+    const dstRatio = w / h;
+    if (srcRatio > dstRatio) {
+      drawW = w;
+      drawH = w / srcRatio;
+    } else {
+      drawH = h;
+      drawW = h * srcRatio;
+    }
+  }
+  const dx = x + (w - drawW) / 2;
+  const dy = y + (h - drawH) / 2;
+  doc.addImage(img.dataUrl, img.format || 'JPEG', dx, dy, drawW, drawH, undefined, 'FAST');
+
+  if ((s.borderWidth || 0) > 0) {
+    _withRgb(doc, s.borderColor || '#000000', (r, g, b) => {
+      doc.setDrawColor(r, g, b);
+      doc.setLineWidth(_strokeWidthMmFromStylePx(s.borderWidth, 0.1, 0.7));
+      _applyPdfBorderStyle(doc, s.borderStyle || 'solid');
+      doc.rect(x, y, w, h);
+      doc.setLineDashPattern([], 0);
+    });
+  }
+}
+
+function _buildBarcodeDataForV2(el, value, bc, profileCfg) {
+  const scale = Math.max(1, Number(profileCfg?.barcodeScale || 3) / 2);
+  const hPx = Math.max(8, (Number(el?.height) || 20) * PDF_MM_TO_PX * scale);
+  const fontSize = (Number(bc?.fontSize) || 10) * scale;
+  const textAllowance = (bc?.showText !== false) ? (fontSize + 4 * scale) : 0;
+  const barHeight = Math.max(8 * scale, Math.round(hPx - textAllowance - 6 * scale));
+  const canvas = document.createElement('canvas');
+  JsBarcode(canvas, String(value || '0000000000'), {
+    format: bc?.type || 'CODE128',
+    displayValue: bc?.showText !== false,
+    lineColor: bc?.textColor || '#000000',
+    background: '#ffffff',
+    width: 1.5 * scale,
+    height: barHeight,
+    margin: 2 * scale,
+    fontSize,
+    textMargin: 2 * scale,
+  });
+  return {
+    dataUrl: canvas.toDataURL('image/png'),
+    width: canvas.width || 1,
+    height: canvas.height || 1,
+  };
+}
+
+function _drawContainedPngInBox(doc, pngDataUrl, srcW, srcH, x, y, w, h, padding = 0.4) {
+  const bx = x + padding;
+  const by = y + padding;
+  const bw = Math.max(0.1, w - padding * 2);
+  const bh = Math.max(0.1, h - padding * 2);
+  const safeW = Math.max(1, Number(srcW) || 1);
+  const safeH = Math.max(1, Number(srcH) || 1);
+  const srcRatio = safeW / safeH;
+  const boxRatio = bw / bh;
+  let drawW = bw;
+  let drawH = bh;
+  if (srcRatio > boxRatio) {
+    drawW = bw;
+    drawH = bw / srcRatio;
+  } else {
+    drawH = bh;
+    drawW = bh * srcRatio;
+  }
+  const dx = bx + (bw - drawW) / 2;
+  const dy = by + (bh - drawH) / 2;
+  doc.addImage(pngDataUrl, 'PNG', dx, dy, drawW, drawH, undefined, 'FAST');
+}
+
+async function _drawV2BarcodeElement(doc, el, fieldValues, profileCfg) {
+  if (typeof JsBarcode === 'undefined') {
+    _drawV2TextElement(doc, el, _resolveElementText({ ...el, type: 'field' }, fieldValues));
+    return;
+  }
+  const value = el.fieldName
+    ? _stringifyValue(fieldValues?.[el.fieldName])
+    : _stringifyValue(el.content || '');
+  const bc = el.barcode || {};
+  const localEl = {
+    ...el,
+    content: el.fieldName ? '' : (value || ''),
+    fieldName: el.fieldName || '',
+    barcode: {
+      ...bc,
+      type: bc.type || 'CODE128',
+      showText: bc.showText !== false,
+      fontSize: bc.fontSize || 10,
+      textColor: bc.textColor || '#000000',
+    },
+  };
+  try {
+    const raster = await _rasterizeDomElementForV2(
+      Math.max(0.1, Number(el.width) || 0),
+      Math.max(0.1, Number(el.height) || 0),
+      (host) => {
+        host.style.position = 'relative';
+        buildBarcodeDOM(host, localEl, fieldValues || {});
+      },
+      { scale: 2, opacity: localEl.style?.opacity }
+    );
+    doc.addImage(
+      raster.dataUrl,
+      'PNG',
+      Number(el.x) || 0,
+      Number(el.y) || 0,
+      Math.max(0.1, Number(el.width) || 0),
+      Math.max(0.1, Number(el.height) || 0),
+      undefined,
+      'FAST'
+    );
+  } catch {
+    const data = _buildBarcodeDataForV2(el, value || '0000000000', bc, profileCfg);
+    _drawContainedPngInBox(
+      doc,
+      data.dataUrl,
+      data.width,
+      data.height,
+      Number(el.x) || 0,
+      Number(el.y) || 0,
+      Math.max(0.1, Number(el.width) || 0),
+      Math.max(0.1, Number(el.height) || 0),
+      0.4
+    );
+  }
+}
+
+function _getTableRowHeightsMm(tbl, totalHeight, rows) {
+  const base = Array.isArray(tbl.rowHeights) && tbl.rowHeights.length ? tbl.rowHeights.slice() : Array(rows).fill(1);
+  while (base.length < rows) base.push(base[base.length - 1] || 1);
+  const sum = base.reduce((a, b) => a + (Number(b) || 0), 0) || rows;
+  return base.map(v => (Number(v) || 0) / sum * totalHeight);
+}
+
+function _getTableColWidthsMm(tbl, totalWidth, cols) {
+  const base = Array.isArray(tbl.colWidths) && tbl.colWidths.length ? tbl.colWidths.slice() : Array(cols).fill(1);
+  while (base.length < cols) base.push(base[base.length - 1] || 1);
+  const sum = base.reduce((a, b) => a + (Number(b) || 0), 0) || cols;
+  return base.map(v => (Number(v) || 0) / sum * totalWidth);
+}
+
+function _collectTableCellMap(tbl) {
+  const map = new Map();
+  (tbl.cells || []).forEach(cell => {
+    map.set(`${cell.row}:${cell.col}`, cell);
+  });
+  return map;
+}
+
+function _computeFooterFormulaValue(rows, field, formulaType, mergeText) {
+  const op = String(formulaType || 'none').toLowerCase();
+  if (op === 'sum') {
+    const total = (rows || []).reduce((acc, row) => acc + (Number(row?.[field]) || 0), 0);
+    return Number.isFinite(total) ? String(total) : '';
+  }
+  if (op === 'merge') {
+    return `${mergeText || ''}`.trim();
+  }
+  return '';
+}
+
+async function _drawV2TableElement(doc, el, fieldValues, detailRows, allDetailRows, profileCfg) {
+  const x = Number(el.x) || 0;
+  const y = Number(el.y) || 0;
+  const w = Math.max(0.1, Number(el.width) || 0);
+  const h = Math.max(0.1, Number(el.height) || 0);
+  try {
+    const raster = await _rasterizeDomElementForV2(
+      w,
+      h,
+      (host) => {
+        host.style.position = 'relative';
+        const inner = document.createElement('div');
+        inner.style.cssText = `position:relative;width:${Math.max(1, Math.round(w * PDF_MM_TO_PX))}px;height:${Math.max(1, Math.round(h * PDF_MM_TO_PX))}px;overflow:hidden;box-sizing:border-box;`;
+        host.appendChild(inner);
+        buildTableDOM(inner, el, fieldValues || {}, PDF_MM_TO_PX, detailRows || null, allDetailRows || detailRows || null);
+      },
+      { scale: 2, opacity: el?.style?.opacity }
+    );
+    doc.addImage(raster.dataUrl, 'PNG', x, y, w, h, undefined, 'FAST');
+    return;
+  } catch {
+    // Fail-soft: keep V2 resilient by drawing fallback border if rasterization fails.
+    const style = el.style || {};
+    _withRgb(doc, style.borderColor || '#000000', (r, g, b) => {
+      doc.setDrawColor(r, g, b);
+      doc.setLineWidth(_strokeWidthMmFromStylePx(style.borderWidth || 1, 0.1, 0.7));
+      _applyPdfBorderStyle(doc, style.borderStyle || 'solid');
+      doc.rect(x, y, w, h);
+      doc.setLineDashPattern([], 0);
+    });
+  }
+}
+
+function _openPdfPreview(doc, layout) {
+  const pdfBlob = doc.output('blob');
+  const fileName = `${_sanitizePdfBaseName(layout?.name)}_${_pdfTimestampDDMMYYYYHHMMSS()}.pdf`;
+  const blobUrl = URL.createObjectURL(pdfBlob);
+  const opened = window.open('', '_blank');
+  if (opened) {
+    const safeName = _escapeHtml(fileName);
+    const jsFileName = JSON.stringify(fileName);
+    const jsBlobUrl = JSON.stringify(blobUrl);
+    opened.document.open();
+    opened.document.write(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${safeName}</title>
+  <style>
+    body{margin:0;font-family:Arial,sans-serif;background:#f2f3f7;}
+    .bar{height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:#ffffff;border-bottom:1px solid #d9dbe3;box-sizing:border-box;}
+    .name{font-size:13px;color:#1f2937;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70vw;}
+    .btn{display:inline-flex;align-items:center;justify-content:center;height:30px;padding:0 12px;border:1px solid #2563eb;border-radius:6px;background:#2563eb;color:#fff;font-size:12px;text-decoration:none;cursor:pointer;}
+    iframe{width:100%;height:calc(100vh - 44px);border:0;display:block;background:#fff;}
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <div class="name">${safeName}</div>
+    <button class="btn" id="downloadBtn" type="button">Download PDF</button>
+  </div>
+  <iframe src="${blobUrl}" title="${safeName}"></iframe>
+  <script>
+    (function () {
+      var fileName = ${jsFileName};
+      var blobUrl = ${jsBlobUrl};
+      var btn = document.getElementById('downloadBtn');
+      if (!btn) return;
+      btn.addEventListener('click', async function () {
+        try {
+          var resp = await fetch(blobUrl);
+          if (!resp.ok) throw new Error('Download source not available');
+          var blob = await resp.blob();
+          var localUrl = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = localUrl;
+          a.download = fileName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function () { URL.revokeObjectURL(localUrl); }, 5000);
+        } catch (e) {
+          alert('Could not download PDF. Please use browser save/download icon.');
+        }
+      });
+    })();
+  </script>
+</body>
+</html>`);
+    opened.document.close();
+  } else {
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  return pdfBlob;
+}
+
+async function generatePDFV2(layout, fieldValues, detailRows, options = {}) {
+  const startedAt = performance.now();
+  const profileId = options.profile || _resolvePdfProfile(layout);
+  const profileCfg = _getPdfProfileConfig(profileId);
+  const page = layout.page || {};
+  const sizes = window.PAGE_SIZES || {};
+  let wMm;
+  let hMm;
+  if (page.size === 'custom') {
+    wMm = Math.max(20, parseFloat(page.customWidthMm ?? page.customWidth) || 210);
+    hMm = Math.max(20, parseFloat(page.customHeightMm ?? page.customHeight) || 297);
+  } else {
+    ({ width: wMm, height: hMm } = sizes[page.size] || sizes.A4 || { width: 210, height: 297 });
+  }
+  if (page.orientation === 'landscape') [wMm, hMm] = [hMm, wMm];
+
+  const allElements = layout.elements || [];
+  const bodyEls = allElements.filter(el => _getElementZone(el, page, hMm) === 'body');
+  const detailEl = bodyEls.find(el => el.type === 'table' && el.table?.detailMode === true);
+  const hasData = detailEl && detailRows && detailRows.length > 0;
+  const pageSlices = hasData ? _buildPageSlices(detailEl, fieldValues, PDF_MM_TO_PX, detailRows, page, hMm) : [null];
+  if (hasData) checkDeterministicPageBreaks(detailEl, fieldValues, PDF_MM_TO_PX, detailRows, page, hMm);
+  const totalPages = pageSlices.length;
+  const orientation = page.orientation === 'landscape' ? 'l' : 'p';
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation, unit: 'mm', format: [wMm, hMm], compress: profileCfg.compress !== false });
+  const mb = page.marginBottom ?? 15;
+  const fEnabled = !!page.footerEnabled;
+  const fH = fEnabled ? (page.footerHeight || 15) : 0;
+  const fPages = page.footerPages || 'all';
+  const hEnabled = !!page.headerEnabled;
+  const hPages = page.headerPages || 'all';
+
+  for (let pi = 0; pi < totalPages; pi++) {
+    if (pi > 0) doc.addPage([wMm, hMm], orientation);
+    const isFirst = pi === 0;
+    const isLast = pi === totalPages - 1;
+    const footerActive = fEnabled && (fPages === 'all' || (fPages === 'last' && isLast));
+    const slice = pageSlices[pi];
+
+    const pageEls = [];
+    let detailOverride = null;
+    allElements.forEach(el => {
+      const zone = _getElementZone(el, page, hMm);
+      if (zone === 'header') {
+        if (hEnabled && (hPages === 'all' || (hPages === 'first' && isFirst))) pageEls.push(el);
+        return;
+      }
+      if (zone === 'footer') {
+        if (fEnabled && (fPages === 'all' || (fPages === 'last' && isLast))) pageEls.push(el);
+        return;
+      }
+      if (el === detailEl) {
+        if (hasData && slice !== null) {
+          const nextY = _detailStartYForPage(detailEl, page, pi);
+          const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
+          pageEls.push(repositioned);
+          detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
+        } else if (!hasData) {
+          pageEls.push(detailEl);
+        }
+        return;
+      }
+      if (!detailEl || !hasData) pageEls.push(el);
+      else if (isFirst) pageEls.push(el);
+    });
+
+    for (const el of pageEls) {
+      if (el.type === 'text' || el.type === 'field' || el.type === 'user' || el.type === 'datetime' || el.type === 'pagenum') {
+        _drawV2TextElement(doc, el, _resolveElementText(el, fieldValues, pi + 1, totalPages));
+      } else if (el.type === 'line') {
+        _drawV2LineElement(doc, el);
+      } else if (el.type === 'rect') {
+        _drawV2RectElement(doc, el);
+      } else if (el.type === 'image' || el.type === 'logo') {
+        await _drawV2ImageElement(doc, el, profileCfg);
+      } else if (el.type === 'barcode') {
+        await _drawV2BarcodeElement(doc, el, fieldValues, profileCfg);
+      } else if (el.type === 'table') {
+        let rows = null;
+        let allRows = null;
+        if (detailOverride && el.id === detailOverride.el?.id) {
+          rows = detailOverride.rows || [];
+          allRows = detailOverride.allRows || detailRows || [];
+        }
+        await _drawV2TableElement(doc, el, fieldValues, rows, allRows, profileCfg);
+      }
+    }
+
+    // keep printable area behavior deterministic with footer space on active pages.
+    if (footerActive && detailEl) {
+      const bottomY = hMm - mb - fH;
+      if (bottomY > 0) {
+        doc.setDrawColor(255, 255, 255);
+      }
+    }
+  }
+
+  const pdfBlob = _openPdfPreview(doc, layout);
+  const durationMs = Math.round(performance.now() - startedAt);
+  const bytes = pdfBlob.size || 0;
+  const bytesPerPage = totalPages > 0 ? Math.round(bytes / totalPages) : bytes;
+  const maxTotal = Number(profileCfg.maxTotalBytes || 0) || Number.MAX_SAFE_INTEGER;
+
+  _recordPdfTelemetry({
+    type: 'pdf_generate',
+    engine: 'v2',
+    profile: profileId,
+    layoutId: layout?.id || '',
+    layoutName: layout?.name || '',
+    pages: totalPages,
+    detailRows: Array.isArray(detailRows) ? detailRows.length : 0,
+    bytes,
+    bytesPerPage,
+    durationMs,
+    success: true,
+  });
+
+  return {
+    blob: pdfBlob,
+    meta: {
+      engine: 'v2',
+      profile: profileId,
+      bytes,
+      pages: totalPages,
+      bytesPerPage,
+      durationMs,
+      exceededSizeGate: bytes > maxTotal,
+    },
+  };
+}
+
+function _hexToRgb(color, fallback = [0, 0, 0]) {
+  if (!color || typeof color !== 'string') return fallback;
+  const c = color.trim();
+  if (/^#([0-9a-f]{3})$/i.test(c)) {
+    const m = c.slice(1);
+    return [
+      parseInt(m[0] + m[0], 16),
+      parseInt(m[1] + m[1], 16),
+      parseInt(m[2] + m[2], 16),
+    ];
+  }
+  if (/^#([0-9a-f]{6})$/i.test(c)) {
+    return [
+      parseInt(c.slice(1, 3), 16),
+      parseInt(c.slice(3, 5), 16),
+      parseInt(c.slice(5, 7), 16),
+    ];
+  }
+  const rgb = c.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/i);
+  if (rgb) {
+    return [
+      Math.max(0, Math.min(255, parseInt(rgb[1], 10) || 0)),
+      Math.max(0, Math.min(255, parseInt(rgb[2], 10) || 0)),
+      Math.max(0, Math.min(255, parseInt(rgb[3], 10) || 0)),
+    ];
+  }
+  return fallback;
+}
+
+function _withRgb(doc, color, fn, fallback = [0, 0, 0]) {
+  const [r, g, b] = _hexToRgb(color, fallback);
+  fn(r, g, b);
+}
+
+function _setPdfFont(doc, style = {}, fallbackSize = 10) {
+  const ffRaw = String(style.fontFamily || 'Helvetica').toLowerCase();
+  let family = 'helvetica';
+  if (ffRaw.includes('times') || ffRaw.includes('georgia') || ffRaw.includes('merriweather') || ffRaw.includes('cambria')) family = 'times';
+  if (ffRaw.includes('courier') || ffRaw.includes('mono')) family = 'courier';
+  const bold = String(style.fontWeight || 'normal').toLowerCase() === 'bold';
+  const italic = String(style.fontStyle || 'normal').toLowerCase() === 'italic';
+  const fontStyle = bold && italic ? 'bolditalic' : bold ? 'bold' : italic ? 'italic' : 'normal';
+  doc.setFont(family, fontStyle);
+  doc.setFontSize(Math.max(5, Number(style.fontSize || fallbackSize) || fallbackSize));
+  _withRgb(doc, style.color || '#000000', (r, g, b) => doc.setTextColor(r, g, b));
+}
+
+function _strokeWidthMmFromStylePx(widthPx, minMm = 0.1, maxMm = 0.8) {
+  const px = Number(widthPx);
+  const safePx = Number.isFinite(px) ? px : 1;
+  const mm = safePx * 0.264583; // CSS px -> mm
+  return Math.max(minMm, Math.min(maxMm, mm));
+}
+
+function _applyPdfBorderStyle(doc, borderStyle) {
+  const bs = String(borderStyle || 'solid').toLowerCase();
+  if (bs === 'dashed') {
+    doc.setLineDashPattern([1.2, 0.8], 0);
+  } else if (bs === 'dotted') {
+    doc.setLineDashPattern([0.25, 0.7], 0);
+  } else {
+    doc.setLineDashPattern([], 0);
+  }
+}
+
+function _applyTextDecorations(doc, text, x, y, maxWidthMm, style) {
+  const deco = String(style?.textDecoration || 'none').toLowerCase();
+  if (deco === 'none') return;
+  const fs = Math.max(5, Number(style?.fontSize || 10) || 10);
+  const textWidth = Math.min(doc.getTextWidth(text), maxWidthMm);
+  const weight = _strokeWidthMmFromStylePx(style?.borderWidth || 0.3, 0.1, 0.5);
+  _applyPdfBorderStyle(doc, style?.borderStyle || 'solid');
+  if (deco.includes('underline')) {
+    doc.setLineWidth(weight);
+    doc.line(x, y + (fs * 0.12), x + textWidth, y + (fs * 0.12));
+  }
+  if (deco.includes('line-through')) {
+    doc.setLineWidth(weight);
+    doc.line(x, y - (fs * 0.28), x + textWidth, y - (fs * 0.28));
+  }
+  doc.setLineDashPattern([], 0);
+}
+
+function _resolvePdfEngine(layout) {
+  return 'v2';
+}
+
+/**
+ * Public PDF generation API.
+ * Routes by page.pdfEngine; defaults to legacy for backward compatibility.
+ */
+async function generatePDF(layout, fieldValues, detailRows) {
+  const engine = _resolvePdfEngine(layout);
+  const startedAt = performance.now();
+  if (engine !== 'v2') {
+    const blob = await generatePDFLegacy(layout, fieldValues, detailRows);
+    const durationMs = Math.round(performance.now() - startedAt);
+    const pagesGuess = Math.max(1, parseInt(_getLastPdfTelemetry()?.pages, 10) || 1);
+    _recordPdfTelemetry({
+      type: 'pdf_generate',
+      engine: 'legacy',
+      profile: 'legacy',
+      layoutId: layout?.id || '',
+      layoutName: layout?.name || '',
+      pages: pagesGuess,
+      detailRows: Array.isArray(detailRows) ? detailRows.length : 0,
+      bytes: blob?.size || 0,
+      bytesPerPage: Math.round((blob?.size || 0) / pagesGuess),
+      durationMs,
+      success: true,
+    });
+    return blob;
+  }
+  const requestedProfile = _resolvePdfProfile(layout);
+  try {
+    const out = await generatePDFV2(layout, fieldValues, detailRows, { profile: requestedProfile });
+    if (!out?.blob) throw new Error('V2 PDF did not return a valid blob.');
+    const meta = out.meta || {};
+    const profileCfg = _getPdfProfileConfig(meta.profile || requestedProfile);
+    if (meta.exceededSizeGate && requestedProfile === 'print_hd') {
+      if (window.showToast) window.showToast('Print HD exceeded size gate. Auto-fallback to Standard.');
+      const fallback = await generatePDFV2(layout, fieldValues, detailRows, { profile: 'standard' });
+      const fbMeta = fallback.meta || {};
+      _recordPdfTelemetry({
+        type: 'pdf_fallback',
+        engine: 'v2',
+        fromProfile: requestedProfile,
+        toProfile: 'standard',
+        layoutId: layout?.id || '',
+        layoutName: layout?.name || '',
+        reason: 'size_gate_exceeded',
+        bytes: fallback.blob?.size || 0,
+        pages: fbMeta.pages || 1,
+        success: true,
+      });
+      return fallback.blob;
+    }
+    if (meta.durationMs > (profileCfg.maxGenerationMs || Number.MAX_SAFE_INTEGER) && requestedProfile === 'print_hd') {
+      if (window.showToast) window.showToast('Print HD generation was slow. Auto-fallback to Standard.');
+      const fallback = await generatePDFV2(layout, fieldValues, detailRows, { profile: 'standard' });
+      _recordPdfTelemetry({
+        type: 'pdf_fallback',
+        engine: 'v2',
+        fromProfile: requestedProfile,
+        toProfile: 'standard',
+        layoutId: layout?.id || '',
+        layoutName: layout?.name || '',
+        reason: 'generation_timeout',
+        bytes: fallback.blob?.size || 0,
+        pages: fallback.meta?.pages || 1,
+        success: true,
+      });
+      return fallback.blob;
+    }
+    return out.blob;
+  } catch (err) {
+    _recordPdfTelemetry({
+      type: 'pdf_generate',
+      engine: 'v2',
+      profile: requestedProfile,
+      layoutId: layout?.id || '',
+      layoutName: layout?.name || '',
+      pages: 0,
+      detailRows: Array.isArray(detailRows) ? detailRows.length : 0,
+      bytes: 0,
+      bytesPerPage: 0,
+      durationMs: Math.round(performance.now() - startedAt),
+      success: false,
+      reason: err?.message || 'unknown',
+    });
+    throw err;
+  }
+}
+
 /**
  * Render a live preview of the layout into containerEl.
  * Builds the same page DOM as generatePDF but displays it directly (no html2canvas).
@@ -1088,3 +2073,13 @@ async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl)
 window.generatePDF = generatePDF;
 window.renderLayoutPreview = renderLayoutPreview;
 window.applyFieldValues = applyFieldValues;
+window.getLastPdfTelemetry = _getLastPdfTelemetry;
+window.getPdfTelemetry = _getPdfTelemetry;
+window.clearPdfTelemetry = _clearPdfTelemetry;
+window.recordPdfEvent = recordPdfEvent;
+window.evaluatePdfReleaseGate = evaluatePdfReleaseGate;
+window.checkDeterministicPageBreaks = checkDeterministicPageBreaks;
+window.getPdfEmailGuardConfig = function getPdfEmailGuardConfig() {
+  const cfg = _getPdfConfig();
+  return { ...(cfg.email || {}) };
+};

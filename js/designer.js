@@ -71,6 +71,10 @@ class Designer {
   init() {
     this.layout = window.getLayoutById(this.layoutId);
     if (!this.layout) return;
+    const pdfDefaults = window.PRINTMORE_PDF_CONFIG?.defaults || {};
+    this.layout.page = this.layout.page || {};
+    this.layout.page.pdfEngine = 'v2';
+    if (!this.layout.page.pdfProfile) this.layout.page.pdfProfile = pdfDefaults.profile || 'standard';
     this.layout.texts = this.layout.texts || [];
     this.layout.defaultStyle = this.layout.defaultStyle || {};
     this.defaultStyle = { ...this.defaultStyle, ...this.layout.defaultStyle };
@@ -547,13 +551,6 @@ class Designer {
         svg.style.cssText = 'display:block;width:100%;height:100%;overflow:hidden;';
         domEl.style.overflow = 'hidden';
         domEl.appendChild(svg);
-        if (value && value.startsWith('{')) {
-          const lbl = document.createElement('div');
-          lbl.style.cssText = `position:absolute;bottom:2px;right:4px;font-size:9px;color:var(--accent);font-style:italic;pointer-events:none;`;
-          lbl.textContent = value;
-          domEl.style.position = 'relative';
-          domEl.appendChild(lbl);
-        }
         return;
       } catch (e) { /* fall through to placeholder */ }
     }
@@ -1191,14 +1188,19 @@ class Designer {
     // Inline page settings (shown when no element is selected)
     const inlinePageChange = () => {
       if (!this.layout) return;
+      const defaultPdfProfile = window.PRINTMORE_PDF_CONFIG?.defaults?.profile || 'standard';
       const sz = document.getElementById('inline-page-size')?.value;
       const or = document.getElementById('inline-orientation')?.value;
+      const pp = document.getElementById('inline-pdf-profile')?.value;
       const mt = parseFloat(document.getElementById('inline-margin-top')?.value) || 0;
       const mr = parseFloat(document.getElementById('inline-margin-right')?.value) || 0;
       const mb = parseFloat(document.getElementById('inline-margin-bottom')?.value) || 0;
       const ml = parseFloat(document.getElementById('inline-margin-left')?.value) || 0;
       if (sz) this.layout.page.size = sz;
       if (or) this.layout.page.orientation = or;
+      this.layout.page.pdfEngine = 'v2';
+      if (pp) this.layout.page.pdfProfile = pp;
+      else if (!this.layout.page.pdfProfile) this.layout.page.pdfProfile = defaultPdfProfile;
       if ((sz || this.layout.page.size) === 'custom') {
         this.layout.page.customWidthMm = Math.max(20, parseFloat(document.getElementById('inline-custom-width')?.value) || 210);
         this.layout.page.customHeightMm = Math.max(20, parseFloat(document.getElementById('inline-custom-height')?.value) || 297);
@@ -1219,7 +1221,7 @@ class Designer {
       this._showNoSelectionPanel();
       this.saveLayout();
     };
-    ['inline-page-size','inline-custom-width','inline-custom-height','inline-orientation','inline-margin-top','inline-margin-right','inline-margin-bottom','inline-margin-left',
+    ['inline-page-size','inline-custom-width','inline-custom-height','inline-orientation','inline-pdf-profile','inline-margin-top','inline-margin-right','inline-margin-bottom','inline-margin-left',
      'inline-header-height','inline-header-pages','inline-footer-height','inline-footer-pages'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('change', inlinePageChange);
@@ -2343,8 +2345,10 @@ class Designer {
     // Populate inline page settings
     const p = this.layout?.page;
     if (p) {
+      const defaultPdfProfile = window.PRINTMORE_PDF_CONFIG?.defaults?.profile || 'standard';
       const sz = document.getElementById('inline-page-size');
       const or = document.getElementById('inline-orientation');
+      const pp = document.getElementById('inline-pdf-profile');
       const mt = document.getElementById('inline-margin-top');
       const mr = document.getElementById('inline-margin-right');
       const mb = document.getElementById('inline-margin-bottom');
@@ -2353,6 +2357,7 @@ class Designer {
       const ch = document.getElementById('inline-custom-height');
       if (sz) sz.value = p.size || 'A4';
       if (or) or.value = p.orientation || 'portrait';
+      if (pp) pp.value = p.pdfProfile || defaultPdfProfile;
       if (mt) mt.value = p.marginTop ?? 15;
       if (mr) mr.value = p.marginRight ?? 15;
       if (mb) mb.value = p.marginBottom ?? 15;
@@ -3309,9 +3314,11 @@ class Designer {
 
   // ===== Page Settings =====
   openPageSettings() {
+    const defaultPdfProfile = window.PRINTMORE_PDF_CONFIG?.defaults?.profile || 'standard';
     const p = this.layout.page;
     document.getElementById('modal-page-size').value = p.size;
     document.getElementById('modal-orientation').value = p.orientation;
+    document.getElementById('modal-pdf-profile').value = p.pdfProfile || defaultPdfProfile;
     document.getElementById('modal-custom-width').value = p.customWidthMm ?? p.customWidth ?? 210;
     document.getElementById('modal-custom-height').value = p.customHeightMm ?? p.customHeight ?? 297;
     document.getElementById('modal-custom-size-group')?.classList.toggle('hidden', p.size !== 'custom');
@@ -3323,8 +3330,11 @@ class Designer {
   }
 
   applyPageSettings() {
+    const defaultPdfProfile = window.PRINTMORE_PDF_CONFIG?.defaults?.profile || 'standard';
     this.layout.page.size = document.getElementById('modal-page-size').value;
     this.layout.page.orientation = document.getElementById('modal-orientation').value;
+    this.layout.page.pdfEngine = 'v2';
+    this.layout.page.pdfProfile = document.getElementById('modal-pdf-profile')?.value || defaultPdfProfile;
     if (this.layout.page.size === 'custom') {
       this.layout.page.customWidthMm = Math.max(20, parseFloat(document.getElementById('modal-custom-width').value) || 210);
       this.layout.page.customHeightMm = Math.max(20, parseFloat(document.getElementById('modal-custom-height').value) || 297);

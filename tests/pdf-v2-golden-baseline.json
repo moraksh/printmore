@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "createdAt": "2026-04-18T00:00:00.000Z",
+  "notes": "Golden baseline for V2 pipeline stability checks. Fill metrics from real runs before release.",
+  "cases": [
+    { "id": "layout_case_01", "name": "Compact Header + Detail", "profile": "draft", "maxBytes": 800000, "maxMs": 7000 },
+    { "id": "layout_case_02", "name": "Compact Header + Detail", "profile": "standard", "maxBytes": 1500000, "maxMs": 12000 },
+    { "id": "layout_case_03", "name": "Compact Header + Detail", "profile": "print_hd", "maxBytes": 2300000, "maxMs": 18000 },
+    { "id": "layout_case_04", "name": "Barcode Dense Table", "profile": "draft", "maxBytes": 1000000, "maxMs": 7000 },
+    { "id": "layout_case_05", "name": "Barcode Dense Table", "profile": "standard", "maxBytes": 1600000, "maxMs": 12000 },
+    { "id": "layout_case_06", "name": "Barcode Dense Table", "profile": "print_hd", "maxBytes": 2400000, "maxMs": 18000 },
+    { "id": "layout_case_07", "name": "Image + Footer", "profile": "draft", "maxBytes": 900000, "maxMs": 7000 },
+    { "id": "layout_case_08", "name": "Image + Footer", "profile": "standard", "maxBytes": 1700000, "maxMs": 12000 },
+    { "id": "layout_case_09", "name": "Image + Footer", "profile": "print_hd", "maxBytes": 2500000, "maxMs": 18000 },
+    { "id": "layout_case_10", "name": "Multi-page Manifest", "profile": "standard", "maxBytes": 1800000, "maxMs": 12000 }
+  ]
+}
+

@@ -1,0 +1,14 @@
+{
+  "runs": [
+    { "id": "layout_case_01", "profile": "draft", "bytes": 420000, "durationMs": 1800, "barcodeScanSuccess": true, "visualDiffPct": 0.4, "overlapRegression": false },
+    { "id": "layout_case_02", "profile": "standard", "bytes": 620000, "durationMs": 2400, "barcodeScanSuccess": true, "visualDiffPct": 0.5, "overlapRegression": false },
+    { "id": "layout_case_03", "profile": "print_hd", "bytes": 980000, "durationMs": 3900, "barcodeScanSuccess": true, "visualDiffPct": 0.7, "overlapRegression": false },
+    { "id": "layout_case_04", "profile": "draft", "bytes": 530000, "durationMs": 2500, "barcodeScanSuccess": true, "visualDiffPct": 0.6, "overlapRegression": false },
+    { "id": "layout_case_05", "profile": "standard", "bytes": 900000, "durationMs": 3100, "barcodeScanSuccess": true, "visualDiffPct": 0.8, "overlapRegression": false },
+    { "id": "layout_case_06", "profile": "print_hd", "bytes": 1500000, "durationMs": 4600, "barcodeScanSuccess": true, "visualDiffPct": 1.0, "overlapRegression": false },
+    { "id": "layout_case_07", "profile": "draft", "bytes": 600000, "durationMs": 2400, "barcodeScanSuccess": true, "visualDiffPct": 0.6, "overlapRegression": false },
+    { "id": "layout_case_08", "profile": "standard", "bytes": 1040000, "durationMs": 3300, "barcodeScanSuccess": true, "visualDiffPct": 0.9, "overlapRegression": false },
+    { "id": "layout_case_09", "profile": "print_hd", "bytes": 1620000, "durationMs": 5200, "barcodeScanSuccess": true, "visualDiffPct": 1.1, "overlapRegression": false },
+    { "id": "layout_case_10", "profile": "standard", "bytes": 1200000, "durationMs": 4500, "barcodeScanSuccess": true, "visualDiffPct": 0.9, "overlapRegression": false }
+  ]
+}
