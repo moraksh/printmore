@@ -298,6 +298,105 @@ function _elementOverlapsVerticalBand(el, bandTopMm, bandBottomMm) {
   return top < bandBottomMm && bottom > bandTopMm;
 }
 
+function _resolveLayoutPageSizeMm(layout) {
+  const page = layout?.page || {};
+  const sizes = window.PAGE_SIZES || {};
+  let wMm;
+  let hMm;
+  if (page.size === 'custom') {
+    wMm = Math.max(20, parseFloat(page.customWidthMm ?? page.customWidth) || 210);
+    hMm = Math.max(20, parseFloat(page.customHeightMm ?? page.customHeight) || 297);
+  } else {
+    ({ width: wMm, height: hMm } = sizes[page.size] || sizes.A4 || { width: 210, height: 297 });
+  }
+  if (page.orientation === 'landscape') [wMm, hMm] = [hMm, wMm];
+  return { wMm, hMm };
+}
+
+function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale = PDF_MM_TO_PX) {
+  const page = layout?.page || {};
+  const { wMm, hMm } = _resolveLayoutPageSizeMm(layout);
+  const allElements = layout?.elements || [];
+  const hEnabled = !!page.headerEnabled;
+  const fEnabled = !!page.footerEnabled;
+  const mb = page.marginBottom ?? 15;
+  const hPages = page.headerPages || 'all';
+  const fPages = page.footerPages || 'all';
+
+  const bodyEls = allElements.filter(el => _getElementZone(el, page, hMm) === 'body');
+  const detailEl = bodyEls.find(el => el.type === 'table' && el.table?.detailMode === true);
+  const hasData = !!(detailEl && Array.isArray(detailRows) && detailRows.length > 0);
+  const pageSlices = hasData ? _buildPageSlices(detailEl, fieldValues, sliceScale, detailRows, page, hMm) : [null];
+  if (hasData) checkDeterministicPageBreaks(detailEl, fieldValues, sliceScale, detailRows, page, hMm);
+  const totalPages = pageSlices.length;
+
+  const pages = [];
+  for (let pi = 0; pi < totalPages; pi++) {
+    const isFirst = pi === 0;
+    const isLast = pi === totalPages - 1;
+    const slice = pageSlices[pi];
+    const footerActive = fEnabled && (fPages === 'all' || (fPages === 'last' && isLast));
+    const detailBandTop = detailEl ? _detailStartYForPage(detailEl, page, pi) : 0;
+    const detailBandBottom = detailEl ? (hMm - mb - (footerActive ? (page.footerHeight || 15) : 0)) : 0;
+    const pageEls = [];
+    let detailOverride = null;
+
+    allElements.forEach(el => {
+      const zone = _getElementZone(el, page, hMm);
+      if (zone === 'header') {
+        if (hEnabled && (hPages === 'all' || (hPages === 'first' && isFirst))) pageEls.push(el);
+        return;
+      }
+      if (zone === 'footer') {
+        if (fEnabled && (fPages === 'all' || (fPages === 'last' && isLast))) pageEls.push(el);
+        return;
+      }
+      if (el === detailEl) {
+        if (hasData && slice !== null) {
+          const nextY = _detailStartYForPage(detailEl, page, pi);
+          const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
+          pageEls.push(repositioned);
+          detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
+        } else if (!hasData) {
+          pageEls.push(detailEl);
+        }
+        return;
+      }
+
+      if (!detailEl || !hasData) {
+        pageEls.push(el);
+      } else if (isFirst) {
+        // Keep non-detail body items on first page unless explicitly header/footer.
+        pageEls.push(el);
+      } else if (_elementOverlapsVerticalBand(el, detailBandTop, detailBandBottom)) {
+        // Edge-case support for positioned items anchored inside the detail band.
+        pageEls.push(el);
+      }
+    });
+
+    pages.push({
+      pageIndex: pi,
+      pageNumber: pi + 1,
+      totalPages,
+      isFirst,
+      isLast,
+      footerActive,
+      pageEls,
+      detailOverride,
+    });
+  }
+
+  return {
+    page,
+    wMm,
+    hMm,
+    pages,
+    totalPages,
+    detailEl,
+    hasData,
+  };
+}
+
 /**
  * Render all detail rows in a hidden container, measure each row's actual
  * DOM height, and return page slices with exactly the rows that fit.
@@ -1791,97 +1890,63 @@ async function generatePDFV2(layout, fieldValues, detailRows, options = {}) {
   const startedAt = performance.now();
   const profileId = options.profile || _resolvePdfProfile(layout);
   const profileCfg = _getPdfProfileConfig(profileId);
-  const page = layout.page || {};
-  const sizes = window.PAGE_SIZES || {};
-  let wMm;
-  let hMm;
-  if (page.size === 'custom') {
-    wMm = Math.max(20, parseFloat(page.customWidthMm ?? page.customWidth) || 210);
-    hMm = Math.max(20, parseFloat(page.customHeightMm ?? page.customHeight) || 297);
-  } else {
-    ({ width: wMm, height: hMm } = sizes[page.size] || sizes.A4 || { width: 210, height: 297 });
-  }
-  if (page.orientation === 'landscape') [wMm, hMm] = [hMm, wMm];
-
-  const allElements = layout.elements || [];
-  const bodyEls = allElements.filter(el => _getElementZone(el, page, hMm) === 'body');
-  const detailEl = bodyEls.find(el => el.type === 'table' && el.table?.detailMode === true);
-  const hasData = detailEl && detailRows && detailRows.length > 0;
-  const pageSlices = hasData ? _buildPageSlices(detailEl, fieldValues, PDF_MM_TO_PX, detailRows, page, hMm) : [null];
-  if (hasData) checkDeterministicPageBreaks(detailEl, fieldValues, PDF_MM_TO_PX, detailRows, page, hMm);
-  const totalPages = pageSlices.length;
+  const plan = _buildCanonicalRenderPlan(layout, fieldValues, detailRows, PDF_MM_TO_PX);
+  const { page, wMm, hMm, pages, totalPages } = plan;
   const orientation = page.orientation === 'landscape' ? 'l' : 'p';
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation, unit: 'mm', format: [wMm, hMm], compress: profileCfg.compress !== false });
-  const mb = page.marginBottom ?? 15;
-  const fEnabled = !!page.footerEnabled;
-  const fH = fEnabled ? (page.footerHeight || 15) : 0;
-  const fPages = page.footerPages || 'all';
-  const hEnabled = !!page.headerEnabled;
-  const hPages = page.headerPages || 'all';
+  const pageRaster = _getV2TableRasterOptions(profileCfg);
+  const wPx = Math.max(1, Math.round(wMm * PDF_MM_TO_PX));
+  const hPx = Math.max(1, Math.round(hMm * PDF_MM_TO_PX));
 
   for (let pi = 0; pi < totalPages; pi++) {
     if (pi > 0) doc.addPage([wMm, hMm], orientation);
-    const isFirst = pi === 0;
-    const isLast = pi === totalPages - 1;
-    const footerActive = fEnabled && (fPages === 'all' || (fPages === 'last' && isLast));
-    const slice = pageSlices[pi];
-
-    const pageEls = [];
-    let detailOverride = null;
-    allElements.forEach(el => {
-      const zone = _getElementZone(el, page, hMm);
-      if (zone === 'header') {
-        if (hEnabled && (hPages === 'all' || (hPages === 'first' && isFirst))) pageEls.push(el);
-        return;
-      }
-      if (zone === 'footer') {
-        if (fEnabled && (fPages === 'all' || (fPages === 'last' && isLast))) pageEls.push(el);
-        return;
-      }
-      if (el === detailEl) {
-        if (hasData && slice !== null) {
-          const nextY = _detailStartYForPage(detailEl, page, pi);
-          const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
-          pageEls.push(repositioned);
-          detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
-        } else if (!hasData) {
-          pageEls.push(detailEl);
-        }
-        return;
-      }
-      if (!detailEl || !hasData) pageEls.push(el);
-      else if (isFirst) pageEls.push(el);
-    });
-
-    for (const el of pageEls) {
-      if (el.type === 'text' || el.type === 'field' || el.type === 'user' || el.type === 'datetime' || el.type === 'pagenum') {
-        _drawV2TextElement(doc, el, _resolveElementText(el, fieldValues, pi + 1, totalPages));
-      } else if (el.type === 'line') {
-        _drawV2LineElement(doc, el);
-      } else if (el.type === 'rect') {
-        _drawV2RectElement(doc, el);
-      } else if (el.type === 'image' || el.type === 'logo') {
-        await _drawV2ImageElement(doc, el, profileCfg);
-      } else if (el.type === 'barcode') {
-        await _drawV2BarcodeElement(doc, el, fieldValues, profileCfg);
-      } else if (el.type === 'table') {
-        let rows = null;
-        let allRows = null;
-        if (detailOverride && el.id === detailOverride.el?.id) {
-          rows = detailOverride.rows || [];
-          allRows = detailOverride.allRows || detailRows || [];
-        }
-        await _drawV2TableElement(doc, el, fieldValues, rows, allRows, profileCfg);
-      }
-    }
-
-    // keep printable area behavior deterministic with footer space on active pages.
-    if (footerActive && detailEl) {
-      const bottomY = hMm - mb - fH;
-      if (bottomY > 0) {
-        doc.setDrawColor(255, 255, 255);
-      }
+    const pagePlan = pages[pi];
+    const pageDOM = _buildPageDOM(
+      page,
+      wMm,
+      hMm,
+      pagePlan.pageEls,
+      fieldValues,
+      PDF_MM_TO_PX,
+      pagePlan.detailOverride,
+      pagePlan.pageNumber,
+      pagePlan.totalPages
+    );
+    const renderHost = document.createElement('div');
+    renderHost.style.cssText = `position:fixed;left:-9999px;top:0;width:${wPx}px;height:${hPx}px;overflow:hidden;background:#ffffff;`;
+    renderHost.appendChild(pageDOM);
+    document.body.appendChild(renderHost);
+    try {
+      await Promise.all(
+        Array.from(renderHost.querySelectorAll('img')).map(img =>
+          img.complete ? Promise.resolve() : new Promise(r => { img.onload = r; img.onerror = r; })
+        )
+      );
+      const canvas = await html2canvas(renderHost, {
+        scale: pageRaster.scale,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        width: wPx,
+        height: hPx,
+      });
+      const imgData = pageRaster.format === 'jpeg'
+        ? canvas.toDataURL('image/jpeg', pageRaster.quality)
+        : canvas.toDataURL('image/png');
+      doc.addImage(
+        imgData,
+        pageRaster.format === 'jpeg' ? 'JPEG' : 'PNG',
+        0,
+        0,
+        wMm,
+        hMm,
+        undefined,
+        'FAST'
+      );
+    } finally {
+      document.body.removeChild(renderHost);
     }
   }
 
@@ -2099,84 +2164,16 @@ async function generatePDF(layout, fieldValues, detailRows) {
  */
 async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl) {
   const page = layout.page;
-  const sizes = window.PAGE_SIZES;
-  let wMm;
-  let hMm;
-  if (page.size === 'custom') {
-    wMm = Math.max(20, parseFloat(page.customWidthMm ?? page.customWidth) || 210);
-    hMm = Math.max(20, parseFloat(page.customHeightMm ?? page.customHeight) || 297);
-  } else {
-    ({ width: wMm, height: hMm } = sizes[page.size] || sizes['A4']);
-  }
-  if (page.orientation === 'landscape') [wMm, hMm] = [hMm, wMm];
+  const plan = _buildCanonicalRenderPlan(layout, fieldValues, detailRows, PDF_MM_TO_PX);
+  const { wMm, hMm, pages, totalPages } = plan;
 
   // Scale to fit container width with a little padding
   const containerWidth = Math.max(200, containerEl.clientWidth - 40);
   const scale = Math.min(PDF_MM_TO_PX, containerWidth / wMm);
-
-  const allElements = layout.elements || [];
-  const hEnabled = !!page.headerEnabled;
-  const fEnabled = !!page.footerEnabled;
-  const mb = page.marginBottom ?? 15;
-  const hH = hEnabled ? (page.headerHeight || 20) : 0;
-  const fH = fEnabled ? (page.footerHeight || 15) : 0;
-  const hPages = page.headerPages || 'all';
-  const fPages = page.footerPages || 'all';
-
-  const bodyEls       = allElements.filter(el => _getElementZone(el, page, hMm) === 'body');
-  const detailEl      = bodyEls.find(el => el.type === 'table' && el.table?.detailMode === true);
-  const hasData       = detailEl && detailRows && detailRows.length > 0;
-
-  let pageSlices;
-  if (hasData) {
-    // Use print-scale slicing even for live preview so page breaks match exported PDF.
-    pageSlices = _buildPageSlices(detailEl, fieldValues, PDF_MM_TO_PX, detailRows, page, hMm);
-  } else {
-    pageSlices = [null];
-  }
-
-  const totalPages = pageSlices.length;
   containerEl.innerHTML = '';
 
   for (let pi = 0; pi < totalPages; pi++) {
-    const isFirst = pi === 0;
-    const isLast  = pi === totalPages - 1;
-    const slice   = pageSlices[pi];
-
-    const pageEls = [];
-    let detailOverride = null;
-    const footerActive = fEnabled && (fPages === 'all' || (fPages === 'last' && isLast));
-    const detailBandTop = detailEl ? _detailStartYForPage(detailEl, page, pi) : 0;
-    const detailBandBottom = detailEl ? (hMm - mb - (footerActive ? fH : 0)) : 0;
-
-    allElements.forEach(el => {
-      const zone = _getElementZone(el, page, hMm);
-      if (zone === 'header') {
-        if (hEnabled && (hPages === 'all' || (hPages === 'first' && isFirst))) pageEls.push(el);
-        return;
-      }
-      if (zone === 'footer') {
-        if (fEnabled && (fPages === 'all' || (fPages === 'last' && isLast))) pageEls.push(el);
-        return;
-      }
-      if (el === detailEl) {
-        if (hasData && slice !== null) {
-          const nextY = _detailStartYForPage(detailEl, page, pi);
-          const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
-          pageEls.push(repositioned);
-          detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
-        } else if (!hasData) {
-          pageEls.push(detailEl);
-        }
-        return;
-      }
-      if (!detailEl || !hasData) {
-        pageEls.push(el);
-      } else if (isFirst) {
-        // Body non-detail elements should remain on page 1 unless explicitly modeled as header/footer zones.
-        pageEls.push(el);
-      }
-    });
+    const pagePlan = pages[pi];
 
     if (totalPages > 1) {
       const lbl = document.createElement('div');
@@ -2185,12 +2182,22 @@ async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl)
       containerEl.appendChild(lbl);
     }
 
-    const pageDOM = _buildPageDOM(page, wMm, hMm, pageEls, fieldValues, scale, detailOverride, pi + 1, totalPages);
+    const pageDOM = _buildPageDOM(
+      page,
+      wMm,
+      hMm,
+      pagePlan.pageEls,
+      fieldValues,
+      scale,
+      pagePlan.detailOverride,
+      pagePlan.pageNumber,
+      pagePlan.totalPages
+    );
 
     // Zone guide overlays — match designer appearance so positions look identical
       if (_isHeaderActiveOnPage(page, pi)) {
       const hOv = document.createElement('div');
-      hOv.style.cssText = `position:absolute;left:0;width:100%;top:0;height:${hH * scale}px;background:rgba(59,130,246,0.07);border-bottom:2px dashed rgba(59,130,246,0.5);box-sizing:border-box;pointer-events:none;z-index:10;`;
+      hOv.style.cssText = `position:absolute;left:0;width:100%;top:0;height:${(page.headerHeight || 20) * scale}px;background:rgba(59,130,246,0.07);border-bottom:2px dashed rgba(59,130,246,0.5);box-sizing:border-box;pointer-events:none;z-index:10;`;
       const hLbl = document.createElement('span');
       hLbl.style.cssText = 'position:absolute;right:8px;bottom:2px;font-size:10px;font-weight:700;letter-spacing:0.08em;color:rgba(59,130,246,0.75);';
       hLbl.textContent = 'HEADER' + (page.headerPages === 'first' ? ' (1st page)' : '');
@@ -2198,9 +2205,10 @@ async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl)
       pageDOM.appendChild(hOv);
     }
       if (_isFooterActiveOnPage(page, pi, totalPages)) {
-      const fTop = (hMm - fH) * scale;
+      const footerHeight = (page.footerHeight || 15);
+      const fTop = (hMm - footerHeight) * scale;
       const fOv = document.createElement('div');
-      fOv.style.cssText = `position:absolute;left:0;width:100%;top:${fTop}px;height:${fH * scale}px;background:rgba(249,115,22,0.07);border-top:2px dashed rgba(249,115,22,0.5);box-sizing:border-box;pointer-events:none;z-index:10;`;
+      fOv.style.cssText = `position:absolute;left:0;width:100%;top:${fTop}px;height:${footerHeight * scale}px;background:rgba(249,115,22,0.07);border-top:2px dashed rgba(249,115,22,0.5);box-sizing:border-box;pointer-events:none;z-index:10;`;
       const fLbl = document.createElement('span');
       fLbl.style.cssText = 'position:absolute;right:8px;top:2px;font-size:10px;font-weight:700;letter-spacing:0.08em;color:rgba(249,115,22,0.75);';
       fLbl.textContent = 'FOOTER' + (page.footerPages === 'last' ? ' (last page)' : '');
