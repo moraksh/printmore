@@ -1238,26 +1238,25 @@ async function shareLayoutToUser(layoutId, enteredUserId, targetLayoutName) {
   if (!targetUsername) return { ok: false, message: 'Enter user id.' };
 
   try {
-    const targetUser = await window.AuthStore?.findUser?.(targetUsername);
-    if (!targetUser) {
-      return { ok: false, message: 'Invalid user id.' };
-    }
-
     const copy = JSON.parse(JSON.stringify(source));
     copy.id = generateId();
     copy.createdAt = new Date().toISOString();
     copy.updatedAt = new Date().toISOString();
-    copy.userId = targetUser.id;
-    copy.username = targetUser.username;
+    copy.userId = '';
+    copy.username = targetUsername;
     if (String(targetLayoutName || '').trim()) {
       copy.name = String(targetLayoutName || '').trim();
     }
     delete copy.sharedWithUsernames;
 
-    const result = await window.LayoutStore?.saveForUser?.(copy, targetUser);
+    const result = await window.LayoutStore?.saveForUser?.(copy, { username: targetUsername });
     if (!result?.ok) throw (result?.error || new Error('Could not share layout.'));
-    return { ok: true, message: `Layout shared to ${targetUser.username}.` };
+    return { ok: true, message: `Layout shared to ${targetUsername}.` };
   } catch (err) {
+    const msg = String(err?.message || '');
+    if (/invalid user|user does not exist|target user|not found/i.test(msg)) {
+      return { ok: false, message: 'Invalid user id.' };
+    }
     return { ok: false, message: err.message || 'Could not share layout.' };
   }
 }
