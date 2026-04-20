@@ -1603,6 +1603,15 @@ textarea { resize: vertical; }
   box-sizing: border-box;
 }
 
+.page-border-guide {
+  position: absolute;
+  pointer-events: none;
+  border-style: solid;
+  border-color: #000000;
+  box-sizing: border-box;
+  z-index: 4;
+}
+
 /* ===== Utility ===== */
 .hidden { display: none !important; }
 

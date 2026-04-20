@@ -210,8 +210,28 @@ function _formatDateTimeStr(format) {
 function applyFieldValues(text, fieldValues) {
   if (!text) return '';
   return text.replace(/\{([^}]+)\}/g, (match, name) => {
-    return Object.prototype.hasOwnProperty.call(fieldValues, name) ? (fieldValues[name] || '') : match;
+    const val = _getFieldValueSmart(fieldValues, name);
+    return (val !== undefined && val !== null && String(val) !== '') ? val : match;
   });
+}
+
+function _normalizeFieldName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+function _getFieldValueSmart(fieldValues, fieldName) {
+  if (!fieldValues || !fieldName) return '';
+  if (Object.prototype.hasOwnProperty.call(fieldValues, fieldName)) {
+    return fieldValues[fieldName];
+  }
+  const wantedNorm = _normalizeFieldName(fieldName);
+  for (const [k, v] of Object.entries(fieldValues)) {
+    if (_normalizeFieldName(k) === wantedNorm) return v;
+  }
+  return '';
 }
 
 /**
@@ -223,9 +243,12 @@ function _getElementZone(el, page, pageHeightMm) {
   const fH = (page.footerEnabled && page.footerHeight > 0) ? (page.footerHeight || 15) : 0;
   // Both zones are measured from physical page top/bottom (same coords as el.y)
   const footerStart = pageHeightMm - fH;
-  const elMidY = el.y + el.height / 2;
-  if (hH > 0 && elMidY < hH) return 'header';
-  if (fH > 0 && elMidY >= footerStart) return 'footer';
+  const elTop = Number(el?.y) || 0;
+  const elBottom = elTop + (Number(el?.height) || 0);
+  // Use edge-based classification so tall elements keep the zone users intended
+  // from their top placement in the designer.
+  if (hH > 0 && elTop < hH) return 'header';
+  if (fH > 0 && elBottom > footerStart) return 'footer';
   return 'body';
 }
 
@@ -240,6 +263,13 @@ function _isFooterActiveOnPage(page, pageIndex, totalPages) {
 }
 
 function _detailStartYForPage(detailEl, page, pageIndex) {
+  const hasPageBreakField = Boolean(String(page?.pageBreakField || '').trim());
+  if (hasPageBreakField) {
+    // In page-break mode, each page should keep the same designed body layout
+    // (barcode/labels/table alignment) as page 1.
+    return detailEl.y;
+  }
+
   if (pageIndex === 0) return detailEl.y;
 
   const marginTop = page.marginTop ?? 15;
@@ -331,6 +361,7 @@ function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale =
   const bodyEls = allElements.filter(el => _getElementZone(el, page, hMm) === 'body');
   const detailEl = bodyEls.find(el => el.type === 'table' && el.table?.detailMode === true);
   const hasData = !!(detailEl && Array.isArray(detailRows) && detailRows.length > 0);
+  const hasPageBreakField = Boolean(String(page?.pageBreakField || '').trim());
   const pageSlices = hasData ? _buildPageSlices(detailEl, fieldValues, sliceScale, detailRows, page, hMm) : [null];
   if (hasData) checkDeterministicPageBreaks(detailEl, fieldValues, sliceScale, detailRows, page, hMm);
   const totalPages = pageSlices.length;
@@ -345,6 +376,24 @@ function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale =
     const detailBandBottom = detailEl ? (hMm - mb - (footerActive ? (page.footerHeight || 15) : 0)) : 0;
     const pageEls = [];
     let detailOverride = null;
+    let pageFieldValues = fieldValues || {};
+
+    // Single-page parity mode:
+    // when there is no detail-driven pagination, render exactly what designer stored.
+    if (!hasData && totalPages === 1) {
+      pages.push({
+        pageIndex: pi,
+        pageNumber: pi + 1,
+        totalPages,
+        isFirst,
+        isLast,
+        footerActive,
+        pageEls: allElements.slice(),
+        fieldValues: pageFieldValues,
+        detailOverride: null,
+      });
+      continue;
+    }
 
     allElements.forEach(el => {
       const zone = _getElementZone(el, page, hMm);
@@ -362,6 +411,11 @@ function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale =
           const repositioned = isFirst ? detailEl : { ...detailEl, y: nextY };
           pageEls.push(repositioned);
           detailOverride = { el: repositioned, rows: slice, allRows: detailRows };
+          if (hasPageBreakField && Array.isArray(slice) && slice.length > 0) {
+            // For page-break mode, non-table elements (barcode/fields/text placeholders)
+            // should reflect the first row of that page slice.
+            pageFieldValues = { ...(fieldValues || {}), ...(slice[0] || {}) };
+          }
         } else if (!hasData) {
           pageEls.push(detailEl);
         }
@@ -370,8 +424,9 @@ function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale =
 
       if (!detailEl || !hasData) {
         pageEls.push(el);
-      } else if (isFirst) {
+      } else if (isFirst || hasPageBreakField) {
         // Keep non-detail body items on first page unless explicitly header/footer.
+        // In page-break mode, repeat full body layout on each page/group.
         pageEls.push(el);
       }
     });
@@ -384,6 +439,7 @@ function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale =
       isLast,
       footerActive,
       pageEls,
+      fieldValues: pageFieldValues,
       detailOverride,
     });
   }
@@ -405,10 +461,34 @@ function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale =
  *
  * @returns {Array<Array>} slices — each entry is the detailRows for one page
  */
+function _splitRowsByPageBreakField(detailRows, pageBreakField) {
+  if (!Array.isArray(detailRows) || detailRows.length === 0) return [];
+  const breakField = String(pageBreakField || '').trim();
+  if (!breakField) return [detailRows];
+
+  const groups = [];
+  let current = [];
+  let prevKey = null;
+  detailRows.forEach((row, index) => {
+    const raw = _getFieldValueSmart(row || {}, breakField);
+    const key = String(raw ?? '').trim().toLowerCase();
+    if (index === 0 || key === prevKey) {
+      current.push(row);
+    } else {
+      groups.push(current);
+      current = [row];
+    }
+    prevKey = key;
+  });
+  if (current.length) groups.push(current);
+  return groups;
+}
+
 function _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm) {
-  const mb  = page.marginBottom ?? 15;
+  const mb = page.marginBottom ?? 15;
   const fH = page.footerEnabled ? (page.footerHeight || 0) : 0; // mm
   const footerPages = page.footerPages || 'all';
+  const rowGroups = _splitRowsByPageBreakField(detailRows, page?.pageBreakField);
 
   // Render ALL rows into a hidden off-screen container to measure heights
   const tmp = document.createElement('div');
@@ -418,7 +498,7 @@ function _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm) {
   document.body.appendChild(tmp);
 
   const tblEl = tmp.querySelector('table');
-  const trs   = tblEl ? Array.from(tblEl.querySelectorAll('tr')) : [];
+  const trs = tblEl ? Array.from(tblEl.querySelectorAll('tr')) : [];
   // trs[0] = column-header row, trs[1..n] = data rows
   const rowHeightsPx = trs.map(tr => Math.ceil(tr.getBoundingClientRect().height));
   document.body.removeChild(tmp);
@@ -436,30 +516,37 @@ function _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm) {
   };
 
   const slices = [];
-  let ri    = 0; // current index into detailRows
+  let globalRowIndex = 0; // index in original detailRows
   let pageIndex = 0;
+  const groupsToProcess = rowGroups.length ? rowGroups : [detailRows];
 
-  while (ri < detailRows.length) {
-    const avail = availablePx(pageIndex, null);
-    let usedPx  = 0;
-    const batch = [];
+  groupsToProcess.forEach(groupRows => {
+    let localIndex = 0;
+    while (localIndex < groupRows.length) {
+      const avail = availablePx(pageIndex, null);
+      let usedPx = 0;
+      const batch = [];
 
-    while (ri < detailRows.length) {
-      const rh = rowHeightsPx[ri + 1] || headerRowPx; // +1: trs[0] is header
-      if (batch.length > 0 && usedPx + rh > avail + 1) break; // +1 rounding buffer
-      batch.push(detailRows[ri]);
-      usedPx += rh;
-      ri++;
+      while (localIndex < groupRows.length) {
+        const rh = rowHeightsPx[globalRowIndex + 1] || headerRowPx; // +1: trs[0] is header
+        if (batch.length > 0 && usedPx + rh > avail + 1) break; // +1 rounding buffer
+        batch.push(groupRows[localIndex]);
+        usedPx += rh;
+        localIndex++;
+        globalRowIndex++;
+      }
+
+      // Guard: always advance at least 1 row to prevent infinite loop
+      if (batch.length === 0 && localIndex < groupRows.length) {
+        batch.push(groupRows[localIndex]);
+        localIndex++;
+        globalRowIndex++;
+      }
+
+      slices.push(batch);
+      pageIndex++;
     }
-
-    // Guard: always advance at least 1 row to prevent infinite loop
-    if (batch.length === 0 && ri < detailRows.length) {
-      batch.push(detailRows[ri++]);
-    }
-
-    slices.push(batch);
-    pageIndex++;
-  }
+  });
 
   if (page.footerEnabled && footerPages === 'last' && slices.length > 0) {
     let lastIndex = slices.length - 1;
@@ -512,6 +599,24 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
   const container = document.createElement('div');
   container.style.cssText = `position:relative;width:${wPx}px;height:${hPx}px;background:#ffffff;overflow:hidden;font-family:Arial,sans-serif;box-sizing:border-box;`;
 
+  let pageBorderEl = null;
+  if (page?.pageBorderEnabled) {
+    const mt = Number(page.marginTop ?? 15);
+    const mr = Number(page.marginRight ?? 15);
+    const mb = Number(page.marginBottom ?? 15);
+    const ml = Number(page.marginLeft ?? 15);
+    const border = document.createElement('div');
+    const ratio = scale / PDF_MM_TO_PX;
+    const borderW = Math.max(1, Number(page.pageBorderWidth || 1) * ratio);
+    const x = ml * scale;
+    const y = mt * scale;
+    const bw = Math.max(1, wPx - (ml + mr) * scale);
+    const bh = Math.max(1, hPx - (mt + mb) * scale);
+    border.style.cssText = `position:absolute;left:${x}px;top:${y}px;width:${bw}px;height:${bh}px;` +
+      `box-sizing:border-box;border:${borderW}px solid #000000;pointer-events:none;z-index:999;`;
+    pageBorderEl = border;
+  }
+
   elements.forEach(el => {
     const isDetailEl = detailOverride && el === detailOverride.el;
     const wrapper = document.createElement('div');
@@ -547,6 +652,9 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
     }
     container.appendChild(wrapper);
   });
+
+  // Keep page border above all rendered content in live preview and PDF render DOM.
+  if (pageBorderEl) container.appendChild(pageBorderEl);
 
   return container;
 }
@@ -648,7 +756,7 @@ function buildFieldDOM(wrapper, el, fieldValues) {
   const style = el.style || {};
   const inner = document.createElement('div');
   applyTextStyles(el, inner, style);
-  const val = el.fieldName ? (fieldValues[el.fieldName] !== undefined ? fieldValues[el.fieldName] : '') : '';
+  const val = el.fieldName ? _getFieldValueSmart(fieldValues, el.fieldName) : '';
   inner.textContent = val;
   wrapper.appendChild(inner);
 }
@@ -721,10 +829,44 @@ function buildPageNumDOM(wrapper, el, pageNum, totalPages) {
   wrapper.appendChild(inner);
 }
 
+function _renderBarcodeCanvasToElement(targetEl, value, opts = {}) {
+  if (typeof JsBarcode === 'undefined') return false;
+  const widthPx = Math.max(16, Math.round(Number(opts.widthPx) || targetEl.clientWidth || 0));
+  const heightPx = Math.max(12, Math.round(Number(opts.heightPx) || targetEl.clientHeight || 0));
+  const showText = opts.showText !== false;
+  const fontSize = Math.max(6, Number(opts.fontSize) || 10);
+  const textAllowance = showText ? (fontSize + 5) : 0;
+  const barHeight = Math.max(8, Math.round(heightPx - textAllowance - 4));
+
+  const canvas = document.createElement('canvas');
+  const scale = 2;
+  canvas.width = Math.max(32, widthPx * scale);
+  canvas.height = Math.max(24, heightPx * scale);
+  const sample = String(value || '0000000000');
+  const moduleWidth = Math.max(1, Math.floor((canvas.width - 8) / Math.max(24, sample.length * 11)));
+
+  JsBarcode(canvas, sample, {
+    format: opts.format || 'CODE128',
+    displayValue: showText,
+    fontSize: Math.max(8, Math.round(fontSize * scale)),
+    lineColor: opts.lineColor || '#000000',
+    height: Math.max(16, barHeight * scale),
+    width: moduleWidth,
+    margin: 2 * scale,
+    textMargin: 2 * scale,
+    background: '#ffffff',
+  });
+
+  canvas.style.cssText = 'display:block;width:100%;height:100%;';
+  targetEl.style.overflow = 'hidden';
+  targetEl.appendChild(canvas);
+  return true;
+}
+
 function buildBarcodeDOM(wrapper, el, fieldValues) {
   const bc = el.barcode || {};
   const rawValue = el.fieldName
-    ? (fieldValues[el.fieldName] !== undefined ? String(fieldValues[el.fieldName]) : '')
+    ? String(_getFieldValueSmart(fieldValues, el.fieldName) || '')
     : (el.content || '');
   const value = rawValue || '0000000000';
 
@@ -732,31 +874,17 @@ function buildBarcodeDOM(wrapper, el, fieldValues) {
   wrapper.style.background = '#fff';
   wrapper.style.overflow = 'hidden';
 
-  // Keep runtime rendering model aligned with designer (SVG + contain fit).
-  const hPx = Math.max(8, el.height * PDF_MM_TO_PX);
+  // Keep runtime rendering model aligned with designer with deterministic canvas sizing.
   try {
-    const textAllowance = bc.showText !== false ? (bc.fontSize || 10) + 4 : 0;
-    const barHeight = Math.max(8, Math.round(hPx - textAllowance - 6));
-    const markup = _getOrCreateBarcodeSvgMarkup(value, {
+    const rendered = _renderBarcodeCanvasToElement(wrapper, value, {
       format: bc.type || 'CODE128',
-      displayValue: bc.showText !== false,
+      showText: bc.showText !== false,
       fontSize: bc.fontSize || 10,
       lineColor: bc.textColor || '#000000',
-      height: barHeight,
-      width: 1.5,
-      margin: 2,
-      textMargin: 2,
-      background: '#ffffff',
+      widthPx: Math.max(16, Math.round(el.width * PDF_MM_TO_PX)),
+      heightPx: Math.max(12, Math.round(el.height * PDF_MM_TO_PX)),
     });
-    const svg = _buildSvgNodeFromMarkup(markup);
-    if (!svg) throw new Error('barcode-svg-missing');
-    svg.setAttribute('width', '100%');
-    svg.setAttribute('height', '100%');
-    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-    svg.style.cssText = 'display:block;width:100%;height:100%;overflow:hidden;';
-    wrapper.style.position = 'relative';
-    wrapper.style.overflow = 'hidden';
-    wrapper.appendChild(svg);
+    if (!rendered) throw new Error('barcode-render-failed');
   } catch (e) {
     wrapper.style.border = '1px dashed #ccc';
     const lbl = document.createElement('div');
@@ -925,7 +1053,14 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
         if (c === cols - 1 || (mergeNext && c + 1 === cols - 1)) td.style.borderRight = `${bw}px ${bs} ${bc}`;
       } else if (borderMode === 'header-outer') {
         td.style.border = 'none';
+        // Outer frame
+        if (r === 0) td.style.borderTop = `${bw}px ${bs} ${bc}`;
+        if (r === rows - 1) td.style.borderBottom = `${bw}px ${bs} ${bc}`;
+        if (c === 0) td.style.borderLeft = `${bw}px ${bs} ${bc}`;
+        if (c === cols - 1 || (mergeNext && c + 1 === cols - 1)) td.style.borderRight = `${bw}px ${bs} ${bc}`;
+        // Header divider
         if (r === 0) td.style.borderBottom = `2px ${bs} ${bc}`;
+        // Footer divider (if footer row exists)
         if (isFooterRow) td.style.borderTop = `2px ${bs} ${bc}`;
       } else {
         td.style.border = 'none';
@@ -956,10 +1091,10 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
         let cellValue = '';
         if (isDetail && dataRows) {
           const dataCellDef = cells.find(cl => cl.row === 1 && cl.col === c) || cells.find(cl => cl.row === r && cl.col === c);
-          if (dataCellDef?.fieldName && dataRows[r - 1]) cellValue = String(dataRows[r - 1][dataCellDef.fieldName] || '');
+          if (dataCellDef?.fieldName && dataRows[r - 1]) cellValue = String(_getFieldValueSmart(dataRows[r - 1], dataCellDef.fieldName) || '');
           else if (dataCellDef?.content) cellValue = applyFieldValues(dataCellDef.content, fieldValues);
         } else {
-          if (cellDef?.fieldName) cellValue = String(fieldValues[cellDef.fieldName] || '');
+          if (cellDef?.fieldName) cellValue = String(_getFieldValueSmart(fieldValues, cellDef.fieldName) || '');
           else if (cellDef?.content) cellValue = applyFieldValues(cellDef.content, fieldValues);
         }
         if (cellValue && typeof JsBarcode !== 'undefined') {
@@ -968,24 +1103,22 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
           td.style.maxHeight = rowHpx + 'px';
           td.style.textAlign = 'center';
           try {
-            const markup = _getOrCreateBarcodeSvgMarkup(cellValue, {
+            const totalW = colWidths && colWidths.length === cols
+              ? colWidths.reduce((s, w) => s + w, 0)
+              : cols;
+            const colRatio = colWidths && colWidths.length === cols
+              ? (Number(colWidths[c] || 1) / Math.max(1, totalW))
+              : (1 / Math.max(1, cols));
+            const cellWidthPx = Math.max(16, Math.round((el.width * scale) * colRatio));
+            const rendered = _renderBarcodeCanvasToElement(td, cellValue, {
               format: cp.barcodeType || 'CODE128',
-              displayValue: cp.barcodeShowText !== false,
-              height: 18,
-              width: 1,
-              margin: 1,
+              showText: cp.barcodeShowText !== false,
               fontSize: 7,
-              textMargin: 1,
-              background: '#ffffff',
               lineColor: '#000000',
+              widthPx: cellWidthPx,
+              heightPx: rowHpx,
             });
-            const svg = _buildSvgNodeFromMarkup(markup);
-            if (!svg) throw new Error('barcode-svg-missing');
-            svg.setAttribute('width', '100%');
-            svg.setAttribute('height', '100%');
-            svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-            svg.style.cssText = 'display:block;width:100%;height:100%;';
-            td.appendChild(svg);
+            if (!rendered) throw new Error('barcode-render-failed');
           } catch(e) {
             td.textContent = cellValue;
           }
@@ -996,14 +1129,14 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
         // Detail row: find which field this column maps to (from row=1 cells in designer)
         const dataCellDef = cells.find(cl => cl.row === 1 && cl.col === c) || cells.find(cl => cl.row === r && cl.col === c);
         if (dataCellDef?.fieldName && dataRows[r - 1]) {
-          td.textContent = dataRows[r - 1][dataCellDef.fieldName] || '';
+          td.textContent = _getFieldValueSmart(dataRows[r - 1], dataCellDef.fieldName) || '';
         } else if (dataCellDef?.content) {
           td.textContent = applyFieldValues(dataCellDef.content, fieldValues);
         }
       } else {
         // Static mode
         if (cellDef?.fieldName) {
-          td.textContent = fieldValues[cellDef.fieldName] !== undefined ? fieldValues[cellDef.fieldName] : '';
+          td.textContent = _getFieldValueSmart(fieldValues, cellDef.fieldName) || '';
         } else if (cellDef?.content) {
           td.textContent = applyFieldValues(cellDef.content, fieldValues);
         }
@@ -1667,7 +1800,7 @@ async function generatePDFV2(layout, fieldValues, detailRows, options = {}) {
       wMm,
       hMm,
       pagePlan.pageEls,
-      fieldValues,
+      pagePlan.fieldValues || fieldValues,
       PDF_MM_TO_PX,
       pagePlan.detailOverride,
       pagePlan.pageNumber,
@@ -1923,7 +2056,7 @@ async function renderLayoutPreview(layout, fieldValues, detailRows, containerEl)
       wMm,
       hMm,
       pagePlan.pageEls,
-      fieldValues,
+      pagePlan.fieldValues || fieldValues,
       scale,
       pagePlan.detailOverride,
       pagePlan.pageNumber,

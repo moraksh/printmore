@@ -279,6 +279,19 @@ function importLayoutFromFile(file) {
   reader.readAsText(file);
 }
 
+function getLivePreviewSnapshot(layoutId) {
+  if (!layoutId) return null;
+  try {
+    const raw = localStorage.getItem(`printmore_live_snapshot_${layoutId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.layout || parsed.layout.id !== layoutId) return null;
+    return parsed.layout;
+  } catch {
+    return null;
+  }
+}
+
 // ===== Field name parser =====
 function parseFieldNames(text) {
   const seen = new Set();
@@ -527,7 +540,21 @@ function createNewLayout() {
     name: finalName,
     createdAt: nowIso,
     updatedAt: nowIso,
-    page: { size, orientation, pdfEngine, pdfProfile, marginTop, marginBottom, marginLeft, marginRight, customWidthMm, customHeightMm },
+    page: {
+      size,
+      orientation,
+      pdfEngine,
+      pdfProfile,
+      marginTop,
+      marginBottom,
+      marginLeft,
+      marginRight,
+      customWidthMm,
+      customHeightMm,
+      pageBorderEnabled: false,
+      pageBorderWidth: 1,
+      pageBreakField: '',
+    },
     fields,
     texts: fields.slice(),
     fieldMeta: {},
@@ -896,6 +923,12 @@ function renderManualRows(layout) {
 }
 
 function parsePasteData(text, fields) {
+  const normalizeName = (v) => String(v || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+  const fieldByNorm = new Map((fields || []).map(f => [normalizeName(f), f]));
+
   const rows = text.trim().split(/\r?\n/).map(r => r.split('\t'));
   if (rows.length === 0) return null;
 
@@ -917,8 +950,12 @@ function parsePasteData(text, fields) {
   return dataRows.map(row => {
     const obj = {};
     headers.forEach((h, i) => {
-      // Find matching field (case-insensitive)
-      const matchingField = fields.find(f => f.toLowerCase() === h.toLowerCase()) || h;
+      // Find matching field (case/spacing/punctuation-insensitive)
+      const hNorm = normalizeName(h);
+      const matchingField =
+        (fields || []).find(f => f.toLowerCase() === String(h).toLowerCase()) ||
+        fieldByNorm.get(hNorm) ||
+        h;
       obj[matchingField] = (row[i] || '').trim();
     });
     return obj;
@@ -2546,7 +2583,11 @@ function initLivePreviewMode(layoutId) {
   }
 
   async function doRender() {
-    lpLayout = getLayoutById(layoutId);
+    // Ensure live tab always renders latest saved layout from local cache
+    // before reading from in-memory cache.
+    if (window.LayoutStore?.syncFromLocal) window.LayoutStore.syncFromLocal();
+    // Always prefer latest persisted layout; snapshot is fallback only.
+    lpLayout = getLayoutById(layoutId) || getLivePreviewSnapshot(layoutId);
     if (!lpLayout) return;
     const { fieldValues, detailRows } = getLpData();
     const area = document.getElementById('livepreview-preview-area');
@@ -2594,7 +2635,9 @@ function initLivePreviewMode(layoutId) {
   document.getElementById('livepreview-btn-render').addEventListener('click', () => doRender());
 
   document.getElementById('livepreview-btn-pdf').addEventListener('click', async () => {
-    lpLayout = getLayoutById(layoutId);
+    if (window.LayoutStore?.syncFromLocal) window.LayoutStore.syncFromLocal();
+    // Always prefer latest persisted layout; snapshot is fallback only.
+    lpLayout = getLayoutById(layoutId) || getLivePreviewSnapshot(layoutId);
     if (!lpLayout) return;
     const { fieldValues, detailRows } = getLpData();
     const btn = document.getElementById('livepreview-btn-pdf');
@@ -2612,7 +2655,8 @@ function initLivePreviewMode(layoutId) {
 
   function refreshLivePreviewFromSavedLayout() {
     if (window.LayoutStore) window.LayoutStore.syncFromLocal();
-    const updated = getLayoutById(layoutId);
+    // Always prefer latest persisted layout; snapshot is fallback only.
+    const updated = getLayoutById(layoutId) || getLivePreviewSnapshot(layoutId);
     if (!updated) return;
     lpLayout = updated;
     // Show the "updated" badge

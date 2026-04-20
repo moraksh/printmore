@@ -75,6 +75,9 @@ class Designer {
     this.layout.page = this.layout.page || {};
     this.layout.page.pdfEngine = 'v2';
     if (!this.layout.page.pdfProfile) this.layout.page.pdfProfile = pdfDefaults.profile || 'standard';
+    if (this.layout.page.pageBorderEnabled === undefined) this.layout.page.pageBorderEnabled = false;
+    if (!Number.isFinite(this.layout.page.pageBorderWidth)) this.layout.page.pageBorderWidth = 1;
+    if (typeof this.layout.page.pageBreakField !== 'string') this.layout.page.pageBreakField = '';
     this.layout.texts = this.layout.texts || [];
     this.layout.defaultStyle = this.layout.defaultStyle || {};
     this.defaultStyle = { ...this.defaultStyle, ...this.layout.defaultStyle };
@@ -219,7 +222,7 @@ class Designer {
 
   _drawMarginGuide() {
     // Remove old guides
-    this.pageCanvas.querySelectorAll('.margin-guide').forEach(el => el.remove());
+    this.pageCanvas.querySelectorAll('.margin-guide, .page-border-guide').forEach(el => el.remove());
     const p = this.layout.page;
     const { pageWidthPx, pageHeightPx } = this._getPageDimensions();
     const top = p.marginTop * MM_TO_PX * this.zoom;
@@ -233,6 +236,18 @@ class Designer {
     guide.style.width = (pageWidthPx - left - right) + 'px';
     guide.style.height = (pageHeightPx - top - bottom) + 'px';
     this.pageCanvas.appendChild(guide);
+
+    if (p.pageBorderEnabled) {
+      const border = document.createElement('div');
+      const borderW = Math.max(1, Number(p.pageBorderWidth || 1) * this.zoom);
+      border.className = 'page-border-guide';
+      border.style.top = top + 'px';
+      border.style.left = left + 'px';
+      border.style.width = (pageWidthPx - left - right) + 'px';
+      border.style.height = (pageHeightPx - top - bottom) + 'px';
+      border.style.borderWidth = borderW + 'px';
+      this.pageCanvas.appendChild(border);
+    }
   }
 
   _drawRulers() {
@@ -525,32 +540,37 @@ class Designer {
       : (el.content || '');
 
     if (typeof JsBarcode !== 'undefined') {
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       const sampleVal = (value && !value.startsWith('{')) ? value : '1234567890';
       try {
-        const elHpx = this._mmToPx(el.height);
-        const textAllowance = bc.showText !== false ? (bc.fontSize || 10) + 4 : 0;
-        const barHeight = Math.max(8, Math.round(elHpx - textAllowance - 6));
-        JsBarcode(svg, sampleVal, {
+        const elWpx = Math.max(16, Math.round(this._mmToPx(el.width)));
+        const elHpx = Math.max(12, Math.round(this._mmToPx(el.height)));
+        const showText = bc.showText !== false;
+        const fontSize = bc.fontSize || 10;
+        const textAllowance = showText ? (fontSize + 5) : 0;
+        const barHeight = Math.max(8, Math.round(elHpx - textAllowance - 4));
+
+        const canvas = document.createElement('canvas');
+        // Draw at a higher internal scale for crisp preview while keeping layout stable.
+        const scale = 2;
+        canvas.width = Math.max(32, elWpx * scale);
+        canvas.height = Math.max(24, elHpx * scale);
+
+        // Keep bars inside element width even when value length changes.
+        const moduleWidth = Math.max(1, Math.floor((canvas.width - 8) / Math.max(24, sampleVal.length * 11)));
+        JsBarcode(canvas, sampleVal, {
           format: bc.type || 'CODE128',
-          displayValue: bc.showText !== false,
-          fontSize: bc.fontSize || 10,
+          displayValue: showText,
+          fontSize: Math.max(8, Math.round(fontSize * scale)),
           lineColor: bc.textColor || '#000000',
-          height: barHeight,
-          width: 1.5,
-          margin: 2,
-          textMargin: 2,
+          height: Math.max(16, barHeight * scale),
+          width: moduleWidth,
+          margin: 2 * scale,
+          textMargin: 2 * scale,
         });
-        // Fix SVG attrs so it fills the element bounds exactly
-        const svgW = parseFloat(svg.getAttribute('width')) || 200;
-        const svgH = parseFloat(svg.getAttribute('height')) || 60;
-        if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
-        svg.setAttribute('width', '100%');
-        svg.setAttribute('height', '100%');
-        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-        svg.style.cssText = 'display:block;width:100%;height:100%;overflow:hidden;';
+
+        canvas.style.cssText = 'display:block;width:100%;height:100%;';
         domEl.style.overflow = 'hidden';
-        domEl.appendChild(svg);
+        domEl.appendChild(canvas);
         return;
       } catch (e) { /* fall through to placeholder */ }
     }
@@ -691,7 +711,14 @@ class Designer {
           cell.style.border = 'none';
         } else if (borderMode === 'header-outer') {
           cell.style.border = 'none';
+          // Outer frame
+          if (r === 0) cell.style.borderTop = `${bw}px ${style.borderStyle || 'solid'} ${bc}`;
+          if (r === renderRows - 1) cell.style.borderBottom = `${bw}px ${style.borderStyle || 'solid'} ${bc}`;
+          if (c === 0) cell.style.borderLeft = `${bw}px ${style.borderStyle || 'solid'} ${bc}`;
+          if (c === cols - 1) cell.style.borderRight = `${bw}px ${style.borderStyle || 'solid'} ${bc}`;
+          // Header divider
           if (r === 0) cell.style.borderBottom = `2px ${style.borderStyle || 'solid'} ${bc}`;
+          // Footer divider (if footer row exists)
           if (isFooterRow) cell.style.borderTop = `2px ${style.borderStyle || 'solid'} ${bc}`;
         } else {
           cell.style.border = 'none';
@@ -704,21 +731,31 @@ class Designer {
           cell.style.justifyContent = 'center';
           const sampleVal = (cellData?.fieldName) ? '1234567890' : (cellData?.content || '1234567890');
           if (typeof JsBarcode !== 'undefined') {
-            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
             try {
-              JsBarcode(svg, sampleVal, {
+              const cellWpx = Math.max(16, Math.round(this._mmToPx((el.width * colWidths[c]) / total)));
+              const cellHpx = Math.max(12, Math.round(this._mmToPx(renderRowHeights[r] || (el.height / Math.max(1, renderRows)))));
+              const showText = cp.barcodeShowText !== false;
+              const fontSize = 7;
+              const textAllowance = showText ? (fontSize + 4) : 0;
+              const barHeight = Math.max(8, Math.round(cellHpx - textAllowance - 4));
+
+              const canvas = document.createElement('canvas');
+              const scale = 2;
+              canvas.width = Math.max(32, cellWpx * scale);
+              canvas.height = Math.max(24, cellHpx * scale);
+              const moduleWidth = Math.max(1, Math.floor((canvas.width - 8) / Math.max(24, sampleVal.length * 11)));
+
+              JsBarcode(canvas, sampleVal, {
                 format: cp.barcodeType || 'CODE128',
-                displayValue: cp.barcodeShowText !== false,
-                height: 18, width: 1, margin: 1, fontSize: 7, textMargin: 1,
+                displayValue: showText,
+                height: Math.max(16, barHeight * scale),
+                width: moduleWidth,
+                margin: 2 * scale,
+                fontSize: fontSize * scale,
+                textMargin: 2 * scale,
               });
-              const svgW = parseFloat(svg.getAttribute('width')) || 100;
-              const svgH = parseFloat(svg.getAttribute('height')) || 28;
-              if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
-              svg.setAttribute('width', '100%');
-              svg.setAttribute('height', '100%');
-              svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-              svg.style.cssText = 'display:block;width:100%;height:100%;';
-              cell.appendChild(svg);
+              canvas.style.cssText = 'display:block;width:100%;height:100%;';
+              cell.appendChild(canvas);
             } catch(e) {
               cell.textContent = sampleVal;
             }
@@ -744,7 +781,8 @@ class Designer {
           }
         } else if (cellData && cellData.fieldName) {
           cell.textContent = `{${cellData.fieldName}}`;
-          cell.style.color = r === 0 ? headerColor : (style.color || '#000000');
+          // Keep the resolved color already set above (cell style > table/header default),
+          // so designer preview matches live/pdf behavior.
           cell.classList.add('has-field');
         } else if (cellData && cellData.content) {
           cell.textContent = cellData.content;
@@ -1028,17 +1066,30 @@ class Designer {
   }
 
   // ===== Table Cell Selection =====
-  _selectTableCell(elementId, row, col) {
-    this.selectedCell = { elementId, row, col };
+  _getEffectiveTableCellStyle(elementId, row, col) {
     const el = this._findElement(elementId);
+    const base = el?.style || {};
     const cellData = el?.table?.cells?.find(c => c.row === row && c.col === col);
     const cellStyle = cellData?.style || {};
-    if (cellStyle.fontFamily) document.getElementById('prop-font-family').value = cellStyle.fontFamily;
-    if (cellStyle.fontSize) document.getElementById('prop-font-size').value = cellStyle.fontSize;
-    if (cellStyle.color) document.getElementById('prop-color').value = cellStyle.color;
-    this._setStyleBtnActive('prop-bold', cellStyle.fontWeight === 'bold');
-    this._setStyleBtnActive('prop-italic', cellStyle.fontStyle === 'italic');
-    this._setStyleBtnActive('prop-underline', cellStyle.textDecoration === 'underline');
+    return {
+      fontFamily: cellStyle.fontFamily || base.fontFamily || 'Arial',
+      fontSize: cellStyle.fontSize || base.fontSize || 10,
+      color: cellStyle.color || base.color || '#000000',
+      fontWeight: cellStyle.fontWeight || base.fontWeight || 'normal',
+      fontStyle: cellStyle.fontStyle || base.fontStyle || 'normal',
+      textDecoration: cellStyle.textDecoration || base.textDecoration || 'none',
+    };
+  }
+
+  _selectTableCell(elementId, row, col) {
+    this.selectedCell = { elementId, row, col };
+    const effectiveStyle = this._getEffectiveTableCellStyle(elementId, row, col);
+    document.getElementById('prop-font-family').value = effectiveStyle.fontFamily;
+    document.getElementById('prop-font-size').value = effectiveStyle.fontSize;
+    document.getElementById('prop-color').value = effectiveStyle.color;
+    this._setStyleBtnActive('prop-bold', effectiveStyle.fontWeight === 'bold');
+    this._setStyleBtnActive('prop-italic', effectiveStyle.fontStyle === 'italic');
+    this._setStyleBtnActive('prop-underline', effectiveStyle.textDecoration === 'underline');
 
     // Hide column properties panel when a non-header cell is clicked
     document.getElementById('prop-group-column')?.classList.add('hidden');
@@ -1209,6 +1260,9 @@ class Designer {
       this.layout.page.marginRight = mr;
       this.layout.page.marginBottom = mb;
       this.layout.page.marginLeft = ml;
+      this.layout.page.pageBorderEnabled = document.getElementById('inline-page-border-enabled')?.checked ?? false;
+      this.layout.page.pageBorderWidth = Math.max(1, parseFloat(document.getElementById('inline-page-border-width')?.value) || 1);
+      this.layout.page.pageBreakField = document.getElementById('inline-page-break-field')?.value || '';
       // Zone settings
       this.layout.page.headerEnabled = document.getElementById('inline-header-enabled')?.checked ?? false;
       this.layout.page.headerHeight  = parseFloat(document.getElementById('inline-header-height')?.value) || 20;
@@ -1222,6 +1276,8 @@ class Designer {
       this.saveLayout();
     };
     ['inline-page-size','inline-custom-width','inline-custom-height','inline-orientation','inline-pdf-profile','inline-margin-top','inline-margin-right','inline-margin-bottom','inline-margin-left',
+     'inline-page-border-width',
+     'inline-page-break-field',
      'inline-header-height','inline-header-pages','inline-footer-height','inline-footer-pages'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('change', inlinePageChange);
@@ -1239,6 +1295,10 @@ class Designer {
     });
     document.getElementById('inline-footer-enabled')?.addEventListener('change', (e) => {
       document.getElementById('inline-footer-options')?.classList.toggle('hidden', !e.target.checked);
+      inlinePageChange();
+    });
+    document.getElementById('inline-page-border-enabled')?.addEventListener('change', (e) => {
+      document.getElementById('inline-page-border-options')?.classList.toggle('hidden', !e.target.checked);
       inlinePageChange();
     });
 
@@ -1380,7 +1440,7 @@ class Designer {
       el.fieldName = itemName;
       this._autoFitTextElement(el);
     }
-    this.elements.push(el);
+    this._insertNewElement(el);
     this.renderElements();
     this.selectElement(el.id);
     this._saveLayoutElements();
@@ -1517,7 +1577,7 @@ class Designer {
     if (el.type === 'text' || el.type === 'field') {
       this._autoFitTextElement(el);
     }
-    this.elements.push(el);
+    this._insertNewElement(el);
 
     this.drawState = null;
 
@@ -1535,22 +1595,17 @@ class Designer {
     }
 
   _startMarqueeSelect(e) {
+    // Defensive cleanup in case an earlier marquee box was orphaned.
+    this.pageCanvas.querySelectorAll('.selection-marquee').forEach(node => node.remove());
     const rect = this.pageCanvas.getBoundingClientRect();
     const xPx = e.clientX - rect.left;
     const yPx = e.clientY - rect.top;
-    const box = document.createElement('div');
-    box.className = 'selection-marquee';
-    box.style.left = xPx + 'px';
-    box.style.top = yPx + 'px';
-    box.style.width = '0px';
-    box.style.height = '0px';
-    this.pageCanvas.appendChild(box);
     this.marqueeState = {
       startX: xPx,
       startY: yPx,
       currentX: xPx,
       currentY: yPx,
-      box,
+      box: null,
       moved: false,
       targetElementId: e.target.closest('.canvas-element')?.dataset.id || null,
     };
@@ -1567,6 +1622,15 @@ class Designer {
     ms.currentX = xPx;
     ms.currentY = yPx;
     ms.moved = ms.moved || Math.abs(xPx - ms.startX) > 3 || Math.abs(yPx - ms.startY) > 3;
+    if (!ms.moved) return;
+
+    if (!ms.box) {
+      const box = document.createElement('div');
+      box.className = 'selection-marquee';
+      this.pageCanvas.appendChild(box);
+      ms.box = box;
+    }
+
     const x = Math.min(xPx, ms.startX);
     const y = Math.min(yPx, ms.startY);
     const w = Math.abs(xPx - ms.startX);
@@ -1607,6 +1671,16 @@ class Designer {
     // ===== Element Creation =====
   createElement(type, x, y) {
     return this._createElementData(type, x, y);
+  }
+
+  _insertNewElement(el) {
+    // Rectangle is usually used as a frame/background.
+    // Keep it behind existing elements so inner fields remain selectable.
+    if (el?.type === 'rect') {
+      this.elements.unshift(el);
+      return;
+    }
+    this.elements.push(el);
   }
 
   _createElementData(type, x, y, width, height) {
@@ -2364,6 +2438,28 @@ class Designer {
       if (ml) ml.value = p.marginLeft ?? 15;
       if (cw) cw.value = p.customWidthMm ?? p.customWidth ?? 210;
       if (ch) ch.value = p.customHeightMm ?? p.customHeight ?? 297;
+      const pbe = document.getElementById('inline-page-border-enabled');
+      const pbw = document.getElementById('inline-page-border-width');
+      const pbo = document.getElementById('inline-page-border-options');
+      const pbf = document.getElementById('inline-page-break-field');
+      if (pbe) pbe.checked = !!p.pageBorderEnabled;
+      if (pbw) pbw.value = p.pageBorderWidth ?? 1;
+      if (pbo) pbo.classList.toggle('hidden', !p.pageBorderEnabled);
+      if (pbf) {
+        const current = p.pageBreakField || '';
+        pbf.innerHTML = '';
+        const noneOpt = document.createElement('option');
+        noneOpt.value = '';
+        noneOpt.textContent = 'None';
+        pbf.appendChild(noneOpt);
+        (this.layout.fields || []).forEach(fieldName => {
+          const opt = document.createElement('option');
+          opt.value = String(fieldName || '');
+          opt.textContent = String(fieldName || '');
+          if (opt.value === current) opt.selected = true;
+          pbf.appendChild(opt);
+        });
+      }
       document.getElementById('inline-custom-size-group')?.classList.toggle('hidden', (p.size || 'A4') !== 'custom');
 
       // Zone settings
@@ -2739,15 +2835,17 @@ class Designer {
     // Typography
     const fontChange = () => {
       const ff = document.getElementById('prop-font-family').value;
-      const fs = parseFloat(document.getElementById('prop-font-size').value) || 12;
+      const fsRaw = parseFloat(document.getElementById('prop-font-size').value);
       const fc = document.getElementById('prop-color').value;
-      if (this._applySelectedCellStyle({ fontFamily: ff, fontSize: fs, color: fc })) return;
+      const stylePatch = { fontFamily: ff, color: fc };
+      if (Number.isFinite(fsRaw)) stylePatch.fontSize = fsRaw;
+      if (this._applySelectedCellStyle(stylePatch)) return;
       // Update default style for future elements
       this.defaultStyle.fontFamily = ff;
-      this.defaultStyle.fontSize = fs;
+      if (Number.isFinite(fsRaw)) this.defaultStyle.fontSize = fsRaw;
       this.defaultStyle.color = fc;
       if (this.selectedId) {
-        this.updateElementStyle(this.selectedId, { fontFamily: ff, fontSize: fs, color: fc });
+        this.updateElementStyle(this.selectedId, stylePatch);
         const el = this._findElement(this.selectedId);
         if (el) this._refreshCharsFitInfo(el);
       }
@@ -3418,9 +3516,19 @@ class Designer {
   _saveLayoutElements() {
     const layout = window.getLayoutById(this.layoutId);
     if (!layout) return;
+    // Persist page-level settings too (margins, zones, page border, etc.)
+    // so Live preview stays in sync with Designer sidebar changes.
+    layout.page = JSON.parse(JSON.stringify(this.layout.page || {}));
     layout.elements = JSON.parse(JSON.stringify(this.elements));
     layout.defaultStyle = { ...this.defaultStyle };
     window.saveLayout(layout);
+    // Keep live-preview tab in lockstep with designer coordinates.
+    try {
+      localStorage.setItem(
+        `printmore_live_snapshot_${this.layoutId}`,
+        JSON.stringify({ ts: Date.now(), layout })
+      );
+    } catch (_) {}
   }
 
   // ===== Helpers =====
