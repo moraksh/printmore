@@ -459,24 +459,58 @@ function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale =
     });
   }
 
-  if (hasData && tailTables.length) {
-    const tailPageEls = [];
-    allElements.forEach(el => {
-      const zone = _getElementZone(el, page, hMm);
-      if (zone === 'header' || zone === 'footer') return;
-      if (tailTables.includes(el)) tailPageEls.push(el);
-    });
-    pages.push({
-      pageIndex: pages.length,
-      pageNumber: pages.length + 1,
-      totalPages: pages.length + 1,
-      isFirst: false,
-      isLast: true,
-      footerActive: false,
-      pageEls: tailPageEls,
-      fieldValues: fieldValues || {},
-      detailOverride: null,
-    });
+  if (hasData && tailTables.length && pages.length) {
+    const lastIndex = pages.length - 1;
+    const lastPage = pages[lastIndex];
+    const lastDetail = lastPage?.detailOverride;
+    let placedOnLastPage = false;
+
+    if (lastDetail?.el) {
+      const lastFieldValues = lastPage.fieldValues || fieldValues || {};
+      const renderedDetailHeightMm = _measureTableHeightPx(
+        lastDetail.el,
+        lastFieldValues,
+        sliceScale,
+        lastDetail.rows || null,
+        lastDetail.allRows || lastDetail.rows || null
+      ) / sliceScale;
+      const renderedDetailBottomMm = (Number(lastDetail.el.y) || 0) + Math.max(0, renderedDetailHeightMm);
+      const minTailY = Math.min(...tailTables.map(t => Number(t.y) || 0));
+      const anchorOffsetMm = Math.max(0, minTailY - detailBottomMm);
+      const baseTailY = renderedDetailBottomMm + anchorOffsetMm;
+      const tailShifted = tailTables.map(t => ({
+        ...t,
+        y: baseTailY + ((Number(t.y) || 0) - minTailY),
+        _tailFlowAnchored: true,
+      }));
+      const tailBottomMm = Math.max(...tailShifted.map(t => (Number(t.y) || 0) + (Number(t.height) || 0)));
+      const footerActive = _isFooterActiveOnPage(page, lastIndex, pages.length);
+      const availableBottomMm = hMm - mb - (footerActive ? (page.footerHeight || 15) : 0);
+      if (tailBottomMm <= availableBottomMm + 0.01) {
+        lastPage.pageEls.push(...tailShifted);
+        placedOnLastPage = true;
+      }
+    }
+
+    if (!placedOnLastPage) {
+      const tailPageEls = [];
+      allElements.forEach(el => {
+        const zone = _getElementZone(el, page, hMm);
+        if (zone === 'header' || zone === 'footer') return;
+        if (tailTables.includes(el)) tailPageEls.push(el);
+      });
+      pages.push({
+        pageIndex: pages.length,
+        pageNumber: pages.length + 1,
+        totalPages: pages.length + 1,
+        isFirst: false,
+        isLast: true,
+        footerActive: false,
+        pageEls: tailPageEls,
+        fieldValues: fieldValues || {},
+        detailOverride: null,
+      });
+    }
   }
 
   const finalTotalPages = pages.length;
@@ -704,6 +738,7 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
       detailGrowthPx > 0 &&
       detailEl &&
       !isDetailEl &&
+      !el._tailFlowAnchored &&
       el.type === 'table' &&
       yPx >= (detailDesignedBottomPx - 0.5)
     ) {
