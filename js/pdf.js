@@ -639,6 +639,17 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
 
   elements.forEach(el => {
     const isDetailEl = detailOverride && el === detailOverride.el;
+    const isBelowDetailTable = Boolean(
+      detailEl &&
+      !isDetailEl &&
+      el.type === 'table' &&
+      ((Number(el.y) || 0) >= ((Number(detailEl.y) || 0) + (Number(detailEl.height) || 0) - 0.01))
+    );
+    // Tables placed below a repeating detail table should appear only
+    // after the repeating rows are finished (on the last page).
+    if (isBelowDetailTable && Number(pageNum || 1) < Number(totalPages || 1)) {
+      return;
+    }
     const wrapper = document.createElement('div');
     // el.x / el.y are in physical-page mm from the page top-left (same origin as the designer canvas).
     // Do NOT add margins here — the margins are already baked into the stored coordinates.
@@ -652,7 +663,12 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
       el.type === 'table' &&
       yPx >= (detailDesignedBottomPx - 0.5)
     ) {
-      yPx += detailGrowthPx;
+      // On the last page, anchor below the fully rendered repeating table.
+      if (Number(pageNum || 1) >= Number(totalPages || 1)) {
+        yPx = Math.max(yPx + detailGrowthPx, (Number(detailEl.y) || 0) * scale + detailMeasuredHeightPx + (2 * scale / PDF_MM_TO_PX));
+      } else {
+        yPx += detailGrowthPx;
+      }
     }
     const wElPx = el.width * scale;
     const hElPx = el.height * scale;
