@@ -277,7 +277,8 @@ function _detailStartYForPage(detailEl, page, pageIndex) {
   const hasHeaderOnCurrentPage = _isHeaderActiveOnPage(page, pageIndex);
   // For continuation pages, start table rows at the current page body start only.
   // This avoids inheriting first-page body content spacing (customer/invoice/total block).
-  return hasHeaderOnCurrentPage ? headerHeight : marginTop;
+  const continuationTopGapMm = 3;
+  return hasHeaderOnCurrentPage ? headerHeight : Math.max(marginTop, continuationTopGapMm);
 }
 
 function _touchBarcodeCache(cache, key, value) {
@@ -655,6 +656,11 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
     }
     const wElPx = el.width * scale;
     const hElPx = el.height * scale;
+    // Keep flowed tables inside the page so they do not disappear when shifted down.
+    if (el.type === 'table') {
+      const maxTopPx = Math.max(0, hPx - hElPx - 1);
+      yPx = Math.min(yPx, maxTopPx);
+    }
     wrapper.style.cssText = `position:absolute;left:${xPx}px;top:${yPx}px;width:${wElPx}px;height:${hElPx}px;box-sizing:border-box;overflow:hidden;opacity:${el.style?.opacity !== undefined ? el.style.opacity : 1};`;
     if (el.type === 'table') {
       wrapper.style.overflow = 'visible';
