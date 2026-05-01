@@ -588,6 +588,19 @@ function checkDeterministicPageBreaks(detailEl, fieldValues, scale, detailRows, 
   return { ok, fingerprintA: a, fingerprintB: b };
 }
 
+function _measureTableHeightPx(el, fieldValues, scale, detailRows, allRows) {
+  if (!el || el.type !== 'table') return 0;
+  const tmp = document.createElement('div');
+  tmp.style.cssText = `position:fixed;left:-9999px;top:0;width:${Math.max(1, el.width * scale)}px;` +
+    `visibility:hidden;pointer-events:none;overflow:visible;`;
+  buildTableDOM(tmp, el, fieldValues || {}, scale, detailRows || null, allRows || detailRows || null);
+  document.body.appendChild(tmp);
+  const tableEl = tmp.querySelector('table');
+  const height = Math.ceil(tableEl?.getBoundingClientRect?.().height || 0);
+  document.body.removeChild(tmp);
+  return height;
+}
+
 /**
  * Build a single page's DOM container with specified elements.
  * detailOverride: { el, rows } — if set, renders detail table with these rows (overrides default).
@@ -598,6 +611,12 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
 
   const container = document.createElement('div');
   container.style.cssText = `position:relative;width:${wPx}px;height:${hPx}px;background:#ffffff;overflow:hidden;font-family:Arial,sans-serif;box-sizing:border-box;`;
+  const detailEl = detailOverride?.el || null;
+  const detailDesignedBottomPx = detailEl ? ((Number(detailEl.y) || 0) + (Number(detailEl.height) || 0)) * scale : null;
+  const detailMeasuredHeightPx = detailEl
+    ? _measureTableHeightPx(detailEl, fieldValues, scale, detailOverride?.rows || null, detailOverride?.allRows || detailOverride?.rows || null)
+    : 0;
+  const detailGrowthPx = detailEl ? Math.max(0, detailMeasuredHeightPx - ((Number(detailEl.height) || 0) * scale)) : 0;
 
   let pageBorderEl = null;
   if (page?.pageBorderEnabled) {
@@ -623,7 +642,17 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
     // el.x / el.y are in physical-page mm from the page top-left (same origin as the designer canvas).
     // Do NOT add margins here — the margins are already baked into the stored coordinates.
     const xPx = el.x * scale;
-    const yPx = el.y * scale;
+    let yPx = el.y * scale;
+    // Flow stacked tables: when detail table expands, push later tables down.
+    if (
+      detailGrowthPx > 0 &&
+      detailEl &&
+      !isDetailEl &&
+      el.type === 'table' &&
+      yPx >= (detailDesignedBottomPx - 0.5)
+    ) {
+      yPx += detailGrowthPx;
+    }
     const wElPx = el.width * scale;
     const hElPx = el.height * scale;
     wrapper.style.cssText = `position:absolute;left:${xPx}px;top:${yPx}px;width:${wElPx}px;height:${hElPx}px;box-sizing:border-box;overflow:hidden;opacity:${el.style?.opacity !== undefined ? el.style.opacity : 1};`;
