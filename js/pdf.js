@@ -361,6 +361,14 @@ function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale =
 
   const bodyEls = allElements.filter(el => _getElementZone(el, page, hMm) === 'body');
   const detailEl = bodyEls.find(el => el.type === 'table' && el.table?.detailMode === true);
+  const detailBottomMm = detailEl ? ((Number(detailEl.y) || 0) + (Number(detailEl.height) || 0)) : 0;
+  const tailTables = detailEl
+    ? bodyEls.filter(el =>
+      el.type === 'table' &&
+      el !== detailEl &&
+      (Number(el.y) || 0) >= (detailBottomMm - 0.01)
+    )
+    : [];
   const hasData = !!(detailEl && Array.isArray(detailRows) && detailRows.length > 0);
   const hasPageBreakField = Boolean(String(page?.pageBreakField || '').trim());
   const pageSlices = hasData ? _buildPageSlices(detailEl, fieldValues, sliceScale, detailRows, page, hMm) : [null];
@@ -423,6 +431,12 @@ function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale =
         return;
       }
 
+      if (hasData && tailTables.includes(el)) {
+        // Tables stacked below repeating/detail table are rendered on a
+        // dedicated tail page after all repeating rows are finished.
+        return;
+      }
+
       if (!detailEl || !hasData) {
         pageEls.push(el);
       } else if (isFirst || hasPageBreakField) {
@@ -445,12 +459,42 @@ function _buildCanonicalRenderPlan(layout, fieldValues, detailRows, sliceScale =
     });
   }
 
+  if (hasData && tailTables.length) {
+    const tailPageEls = [];
+    allElements.forEach(el => {
+      const zone = _getElementZone(el, page, hMm);
+      if (zone === 'header' || zone === 'footer') return;
+      if (tailTables.includes(el)) tailPageEls.push(el);
+    });
+    pages.push({
+      pageIndex: pages.length,
+      pageNumber: pages.length + 1,
+      totalPages: pages.length + 1,
+      isFirst: false,
+      isLast: true,
+      footerActive: false,
+      pageEls: tailPageEls,
+      fieldValues: fieldValues || {},
+      detailOverride: null,
+    });
+  }
+
+  const finalTotalPages = pages.length;
+  pages.forEach((p, i) => {
+    p.pageIndex = i;
+    p.pageNumber = i + 1;
+    p.totalPages = finalTotalPages;
+    p.isFirst = i === 0;
+    p.isLast = i === finalTotalPages - 1;
+    p.footerActive = _isFooterActiveOnPage(page, i, finalTotalPages);
+  });
+
   return {
     page,
     wMm,
     hMm,
     pages,
-    totalPages,
+    totalPages: finalTotalPages,
     detailEl,
     hasData,
   };
