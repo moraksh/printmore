@@ -573,7 +573,9 @@ function _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm) {
   const tmp = document.createElement('div');
   tmp.style.cssText = `position:fixed;left:-9999px;top:0;width:${detailEl.width * scale}px;` +
     `visibility:hidden;pointer-events:none;overflow:visible;`;
-  buildTableDOM(tmp, detailEl, fieldValues, scale, detailRows);
+  // For pagination measurement, do not include the table footer row.
+  // Footer (sum/text) is rendered only on the final detail page.
+  buildTableDOM(tmp, detailEl, fieldValues, scale, detailRows, detailRows, { showDetailFooter: false });
   document.body.appendChild(tmp);
 
   const tblEl = tmp.querySelector('table');
@@ -626,6 +628,41 @@ function _buildPageSlices(detailEl, fieldValues, scale, detailRows, page, hMm) {
       pageIndex++;
     }
   });
+
+  // Rebalance slices forward so each page is filled as much as possible
+  // before spilling to the next page.
+  const usedPxForSlice = (sliceIdx) => {
+    const startIndex = slices.slice(0, sliceIdx).reduce((sum, rows) => sum + rows.length, 0);
+    return slices[sliceIdx].reduce((sum, _row, rowOffset) => {
+      const originalIndex = startIndex + rowOffset;
+      return sum + (rowHeightsPx[originalIndex + 1] || headerRowPx);
+    }, 0);
+  };
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const totalNow = slices.length;
+    for (let i = 0; i < slices.length - 1; i++) {
+      const avail = availablePx(i, totalNow);
+      let used = usedPxForSlice(i);
+      while (slices[i + 1] && slices[i + 1].length) {
+        const nextStartIndex = slices.slice(0, i + 1).reduce((sum, rows) => sum + rows.length, 0);
+        const nextRowHeight = rowHeightsPx[nextStartIndex + 1] || headerRowPx;
+        if (used + nextRowHeight > avail + 1) break;
+        const moved = slices[i + 1].shift();
+        if (moved === undefined) break;
+        slices[i].push(moved);
+        used += nextRowHeight;
+        changed = true;
+      }
+      if (slices[i + 1] && slices[i + 1].length === 0) {
+        slices.splice(i + 1, 1);
+        changed = true;
+        break; // restart pass with updated page indexes/count
+      }
+    }
+  }
 
   if (page.footerEnabled && footerPages === 'last' && slices.length > 0) {
     let lastIndex = slices.length - 1;
@@ -764,7 +801,10 @@ function _buildPageDOM(page, wMm, hMm, elements, fieldValues, scale, detailOverr
     if (el.type === 'table' && isDetailEl) {
       wrapper.style.height = 'auto';
       wrapper.style.overflow = 'visible';
-      buildTableDOM(wrapper, el, fieldValues, scale, detailOverride.rows, detailOverride.allRows || detailOverride.rows);
+      const allRows = detailOverride.allRows || detailOverride.rows || [];
+      const pageRows = detailOverride.rows || [];
+      const isLastDetailSlice = !!(allRows.length && pageRows.length && pageRows[pageRows.length - 1] === allRows[allRows.length - 1]);
+      buildTableDOM(wrapper, el, fieldValues, scale, pageRows, allRows, { showDetailFooter: isLastDetailSlice });
     } else {
       switch (el.type) {
         case 'text':     buildTextDOM(wrapper, el, fieldValues); break;
@@ -1024,10 +1064,12 @@ function buildBarcodeDOM(wrapper, el, fieldValues) {
   }
 }
 
-function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRows) {
+function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRows, renderOptions = {}) {
   const tbl = el.table || { rows: 2, cols: 4, cells: [], theme: 'plain', borderMode: 'all' };
   const isDetail = tbl.detailMode === true;
   const footerEnabled = tbl.footerEnabled === true;
+  const showDetailFooter = renderOptions.showDetailFooter !== false;
+  const footerEnabledEffective = isDetail ? (footerEnabled && showDetailFooter) : footerEnabled;
   const cols = tbl.cols || 3;
   const cells = tbl.cells || [];
   const colWidths = tbl.colWidths || null;
@@ -1039,7 +1081,7 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
   const baseRows = isDetail && dataRows
     ? dataRows.length + 1   // header + data rows
     : (tbl.rows || 3);
-  const rows = baseRows + (footerEnabled ? 1 : 0);
+  const rows = baseRows + (footerEnabledEffective ? 1 : 0);
 
   const themes = {
     'plain':       { headerBg: '#ffffff', headerColor: '#000000', rowBg: '#ffffff', altRowBg: '#ffffff' },
@@ -1122,14 +1164,14 @@ function buildTableDOM(wrapper, el, fieldValues, scale, detailRows, allDetailRow
   const footerRowMm = (Number.isFinite(tbl.footerRowHeight) && tbl.footerRowHeight > 0)
     ? tbl.footerRowHeight
     : (rowHeightsBaseMm[Math.max(1, rowHeightsBaseMm.length) - 1] || rowHeightsBaseMm[0] || 5);
-  const rowHeightsMm = footerEnabled ? rowHeightsBaseMm.concat([footerRowMm]) : rowHeightsBaseMm;
+  const rowHeightsMm = footerEnabledEffective ? rowHeightsBaseMm.concat([footerRowMm]) : rowHeightsBaseMm;
   const headerRowPx = rowHeightsMm[0] * scale;
   const dataRowPx   = rowHeightsMm[1] * scale;
 
   for (let r = 0; r < rows; r++) {
     const tr = document.createElement('tr');
     const isHeaderRow = r === 0;
-    const isFooterRow = footerEnabled && r === rows - 1;
+    const isFooterRow = footerEnabledEffective && r === rows - 1;
 
     // Apply designer row height so PDF matches the designed layout
     const rowHpx = rowHeightsMm[Math.min(r, rowHeightsMm.length - 1)] * scale;
